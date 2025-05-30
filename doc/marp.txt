@@ -1,0 +1,179 @@
+*marp.txt*  Marp plugin for Neovim
+
+Author:  nwiizo
+License: MIT
+
+CONTENTS                                                         *marp-contents*
+
+1. Introduction ................ |marp-introduction|
+2. Commands .................... |marp-commands|
+3. Configuration ............... |marp-configuration|
+4. Functions ................... |marp-functions|
+5. Snippets .................... |marp-snippets|
+
+==============================================================================
+INTRODUCTION                                                 *marp-introduction*
+
+marp.nvim is a Neovim plugin for Marp (Markdown Presentation Ecosystem).
+It provides live preview, export functionality, theme management, and more.
+
+Features:
+- Live preview with auto-refresh
+- Auto cleanup when buffer is closed
+- Export to multiple formats (HTML, PDF, PPTX, PNG, JPEG)
+- Theme switching
+- Snippet insertion
+- Multiple server management
+
+==============================================================================
+COMMANDS                                                        *marp-commands*
+
+:MarpWatch                                                          *:MarpWatch*
+    Start watching the current markdown file and open it in a browser.
+    The server automatically stops when the buffer is closed.
+
+:MarpStop                                                            *:MarpStop*
+    Stop the Marp server for the current buffer.
+
+:MarpStopAll                                                      *:MarpStopAll*
+    Stop all active Marp servers.
+
+:MarpPreview                                                      *:MarpPreview*
+    Open a one-time preview of the current file.
+
+:MarpList                                                            *:MarpList*
+    List all active Marp servers.
+
+:MarpInfo                                                            *:MarpInfo*
+    Show detailed information about the current presentation including
+    theme, slide count, file size, and export history.
+
+:MarpCopyPath                                                    *:MarpCopyPath*
+    Copy the HTML file path to clipboard. Useful when you need to share
+    or access the generated HTML file directly.
+
+:MarpExport [{format}]                                             *:MarpExport*
+    Export the current file to the specified format.
+    Available formats: html, pdf, pptx, png, jpeg
+    Default: html
+
+:MarpTheme {theme}                                                  *:MarpTheme*
+    Set the theme for the current presentation.
+    Available themes: default, gaia, uncover
+
+:MarpSnippet {snippet}                                            *:MarpSnippet*
+    Insert a Marp snippet at the current cursor position.
+    See |marp-snippets| for available snippets.
+
+==============================================================================
+CONFIGURATION                                               *marp-configuration*
+
+Configure marp.nvim by calling the setup function:
+
+    require('marp').setup({
+        -- Options here
+    })
+
+Options:
+
+marp_command                                               *marp.marp_command*
+    Command to run Marp CLI.
+    Default: "npx @marp-team/marp-cli@latest"
+    If local marp is available, it will be used automatically.
+
+browser                                                         *marp.browser*
+    Browser command to use.
+    Default: nil (auto-detect based on OS)
+
+themes                                                           *marp.themes*
+    Table of available themes.
+    Default: {
+        default = "default",
+        gaia = "gaia",
+        uncover = "uncover"
+    }
+
+export_formats                                           *marp.export_formats*
+    Table of export format flags.
+    Default: {
+        html = "--html",
+        pdf = "--pdf",
+        pptx = "--pptx",
+        png = "--images png",
+        jpeg = "--images jpeg"
+    }
+
+show_tips                                                     *marp.show_tips*
+    Show helpful tips after starting the server.
+    Default: true
+
+auto_copy_path                                           *marp.auto_copy_path*
+    Automatically copy file paths to clipboard.
+    Default: true
+
+show_file_size                                           *marp.show_file_size*
+    Show file sizes after export.
+    Default: true
+
+suggest_gitignore                                     *marp.suggest_gitignore*
+    Suggest adding *.html to .gitignore if not present.
+    Default: true
+
+==============================================================================
+FUNCTIONS                                                      *marp-functions*
+
+require('marp').watch()                                           *marp.watch*
+    Start watching the current file.
+
+require('marp').stop([bufnr])                                      *marp.stop*
+    Stop watching the specified buffer (default: current).
+
+require('marp').stop_all()                                    *marp.stop_all*
+    Stop all active servers.
+
+require('marp').preview()                                       *marp.preview*
+    Open a one-time preview.
+
+require('marp').export([format])                                *marp.export*
+    Export the current file.
+
+require('marp').set_theme(theme)                             *marp.set_theme*
+    Set the presentation theme.
+
+require('marp').insert_snippet(name)                    *marp.insert_snippet*
+    Insert a snippet.
+
+require('marp').list_active()                              *marp.list_active*
+    List active servers.
+
+require('marp').info()                                            *marp.info*
+    Display presentation information.
+
+require('marp').copy_html_path()                        *marp.copy_html_path*
+    Copy HTML file path to clipboard.
+
+==============================================================================
+SNIPPETS                                                        *marp-snippets*
+
+Available snippets for :MarpSnippet command:
+
+title                                                        *marp-snippet-title*
+    Title slide with author and date fields.
+
+columns                                                    *marp-snippet-columns*
+    Two-column layout using Marp's column syntax.
+
+image                                                        *marp-snippet-image*
+    Basic image markdown syntax.
+
+bg_image                                                  *marp-snippet-bg_image*
+    Background image directive.
+
+center                                                      *marp-snippet-center*
+    Centered content class.
+
+speaker_notes                                          *marp-snippet-speaker_notes*
+    HTML comment for speaker notes.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
