@@ -3,6 +3,14 @@ if exists('g:loaded_marp')
 endif
 let g:loaded_marp = 1
 
+" Initialize the plugin with default settings if not already setup
+lua << EOF
+if not _G._marp_initialized then
+  require('marp').setup({})
+  _G._marp_initialized = true
+end
+EOF
+
 " Commands
 command! MarpWatch lua require('marp').watch()
 command! MarpStop lua require('marp').stop()

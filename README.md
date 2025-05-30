@@ -19,6 +19,14 @@ A Neovim plugin for [Marp](https://marp.app/) (Markdown Presentation Ecosystem).
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
+**Basic setup (works out of the box):**
+```lua
+{
+  'nwiizo/marp.nvim'
+}
+```
+
+**With custom configuration:**
 ```lua
 {
   'nwiizo/marp.nvim',
@@ -34,11 +42,19 @@ A Neovim plugin for [Marp](https://marp.app/) (Markdown Presentation Ecosystem).
 
 ### Using [packer.nvim](https://github.com/wbthomason/packer.nvim)
 
+**Basic setup (works out of the box):**
+```lua
+use 'nwiizo/marp.nvim'
+```
+
+**With custom configuration:**
 ```lua
 use {
   'nwiizo/marp.nvim',
   config = function()
-    require('marp').setup()
+    require('marp').setup({
+      -- Optional configuration
+    })
   end
 }
 ```
@@ -168,6 +184,14 @@ require('marp').setup({ server_mode = true })
 
 ### [lazy.nvim](https://github.com/folke/lazy.nvim)を使用
 
+**基本設定（そのまま使用可能）:**
+```lua
+{
+  'nwiizo/marp.nvim'
+}
+```
+
+**カスタム設定:**
 ```lua
 {
   'nwiizo/marp.nvim',
@@ -183,11 +207,19 @@ require('marp').setup({ server_mode = true })
 
 ### [packer.nvim](https://github.com/wbthomason/packer.nvim)を使用
 
+**基本設定（そのまま使用可能）:**
+```lua
+use 'nwiizo/marp.nvim'
+```
+
+**カスタム設定:**
 ```lua
 use {
   'nwiizo/marp.nvim',
   config = function()
-    require('marp').setup()
+    require('marp').setup({
+      -- オプション設定
+    })
   end
 }
 ```
