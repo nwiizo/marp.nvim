@@ -19,22 +19,35 @@ A Neovim plugin for [Marp](https://marp.app/) (Markdown Presentation Ecosystem).
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
-**Basic setup (works out of the box):**
+```lua
+{
+  "nwiizo/marp.nvim",
+  ft = "markdown",
+  config = function()
+    require("marp").setup {
+      -- Optional configuration
+      marp_command = "/opt/homebrew/opt/node/bin/node /opt/homebrew/bin/marp",
+      browser = nil, -- auto-detect
+      server_mode = false, -- Use watch mode (-w)
+    }
+  end,
+}
+```
+
+**Minimal setup:**
 ```lua
 {
   'nwiizo/marp.nvim'
 }
 ```
 
-**With custom configuration:**
+**With npx (if Marp is not installed locally):**
 ```lua
 {
   'nwiizo/marp.nvim',
   config = function()
     require('marp').setup({
-      -- Optional configuration
       marp_command = "npx @marp-team/marp-cli@latest",
-      browser = nil, -- auto-detect
     })
   end
 }
@@ -184,22 +197,35 @@ require('marp').setup({ server_mode = true })
 
 ### [lazy.nvim](https://github.com/folke/lazy.nvim)を使用
 
-**基本設定（そのまま使用可能）:**
+```lua
+{
+  "nwiizo/marp.nvim",
+  ft = "markdown",
+  config = function()
+    require("marp").setup {
+      -- オプション設定
+      marp_command = "/opt/homebrew/opt/node/bin/node /opt/homebrew/bin/marp",
+      browser = nil, -- 自動検出
+      server_mode = false, -- ウォッチモード(-w)を使用
+    }
+  end,
+}
+```
+
+**最小設定:**
 ```lua
 {
   'nwiizo/marp.nvim'
 }
 ```
 
-**カスタム設定:**
+**npxを使用（Marpがローカルにインストールされていない場合）:**
 ```lua
 {
   'nwiizo/marp.nvim',
   config = function()
     require('marp').setup({
-      -- オプション設定
       marp_command = "npx @marp-team/marp-cli@latest",
-      browser = nil, -- 自動検出
     })
   end
 }
