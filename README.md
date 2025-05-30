@@ -15,6 +15,10 @@ A Neovim plugin for [Marp](https://marp.app/) (Markdown Presentation Ecosystem).
 - 🔧 **Dual Mode**: Support both server mode (-s) and watch mode (--watch)
 - 🐛 **Debug Mode**: Detailed logging for troubleshooting
 
+## Demo
+
+![marp.nvim demo](.github/images/marp-nvim-demo.gif)
+
 ## Installation
 
 ### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
