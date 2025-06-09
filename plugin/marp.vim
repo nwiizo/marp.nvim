@@ -1,6 +1,4 @@
-if exists('g:loaded_marp')
-  finish
-endif
+if exists('g:loaded_marp') | finish | endif
 let g:loaded_marp = 1
 
 " Initialize the plugin with default settings if not already setup
