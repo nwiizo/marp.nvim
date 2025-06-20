@@ -318,7 +318,7 @@ function M.export(format)
 
   local marp_cmd = get_marp_cmd()
   local output_file = file:gsub("%.md$", "")
-  local cmd = string.format("%s %s '%s'", marp_cmd, export_flag, file)
+  local cmd = string.format("%s --no-stdin %s '%s'", marp_cmd, export_flag, file)
 
   -- Determine output filename
   local ext_map = {
