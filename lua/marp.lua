@@ -1,3 +1,5 @@
+local cli = require("marp.cli")
+
 local M = {}
 
 -- Store active Marp processes
@@ -7,8 +9,9 @@ M.active_processes = {}
 M.metadata = {
   html_files = {}, -- Store generated HTML file paths
   last_export = {}, -- Store last export info
-  usage_stats = {}, -- Store usage statistics
   process_retries = {}, -- Track retry attempts
+  process_generations = {}, -- Cancel stale automatic restarts
+  stopping_processes = {}, -- Retain handles until exit callbacks run
   browser_opened = {}, -- Track if browser was opened for buffer
 }
 
@@ -30,18 +33,31 @@ M.config = {
     notes = "--notes",
   },
   -- New config options for tips
-  show_tips = true,
   auto_copy_path = true,
   show_file_size = true,
   suggest_gitignore = true,
-  debug = true, -- Enable debug logging
+  debug = false, -- Enable debug logging
   server_mode = false, -- Use watch mode (-w) by default
   html_option = true, -- Use --html option in watch mode by default
-  allow_local_files = true, -- Use --allow-local-files for local asset loading
+  allow_local_files = false, -- Opt in to local asset access for trusted decks
+  no_stdin = true, -- Prevent Marp CLI from waiting on Neovim's stdin pipe
+  config_file = nil, -- Explicit config path (false disables config discovery)
   node_options = "", -- Set to "--experimental-require-module" if using custom node path with Node.js v25+
+  -- Browser conversion options
+  browser_kind = nil, -- "auto", "chrome", "edge", "firefox", or a preference list
+  browser_path = nil, -- Path to a browser executable
+  browser_protocol = nil, -- "cdp" or "webdriver-bidi"
+  browser_timeout = nil, -- Timeout for browser operations in seconds
+  -- HTML template options
+  template = nil, -- "bare" or "bespoke"
+  bespoke_osc = nil,
+  bespoke_progress = nil,
+  bespoke_transition = nil,
   -- PDF options
   pdf_notes = false, -- Add presenter notes to PDF as annotations
   pdf_outlines = false, -- Add outlines (bookmarks) to PDF
+  pdf_outlines_pages = nil, -- Include slide pages in PDF outlines
+  pdf_outlines_headings = nil, -- Include Markdown headings in PDF outlines
   -- PPTX options
   pptx_editable = false, -- Generate editable PPTX (experimental)
   -- Image options
@@ -51,9 +67,65 @@ M.config = {
   theme_set = {}, -- Additional theme CSS file paths
 }
 
+local function validate_string_list(name, value)
+  if type(value) ~= "table" then
+    return
+  end
+  for index, item in ipairs(value) do
+    if type(item) ~= "string" or item == "" then
+      error(string.format("%s[%d] must be a non-empty string", name, index), 3)
+    end
+  end
+end
+
+local function validate_config(opts)
+  if opts == nil then
+    return
+  end
+
+  for _, key in ipairs({ "marp_command", "browser", "browser_kind" }) do
+    local value = opts[key]
+    if value ~= nil and type(value) ~= "string" and type(value) ~= "table" then
+      error("opts." .. key .. " must be a string or a list", 3)
+    end
+    validate_string_list("opts." .. key, value)
+  end
+  if opts.theme_set ~= nil and type(opts.theme_set) ~= "table" then
+    error("opts.theme_set must be a list", 3)
+  end
+  validate_string_list("opts.theme_set", opts.theme_set)
+
+  if opts.config_file ~= nil and opts.config_file ~= false and type(opts.config_file) ~= "string" then
+    error("opts.config_file must be a string, false, or nil", 3)
+  end
+  if opts.image_scale ~= nil and (type(opts.image_scale) ~= "number" or opts.image_scale <= 0) then
+    error("opts.image_scale must be a positive number", 3)
+  end
+  if
+    opts.jpeg_quality ~= nil
+    and (type(opts.jpeg_quality) ~= "number" or opts.jpeg_quality < 1 or opts.jpeg_quality > 100)
+  then
+    error("opts.jpeg_quality must be a number from 1 to 100", 3)
+  end
+  if opts.browser_timeout ~= nil and (type(opts.browser_timeout) ~= "number" or opts.browser_timeout < 0) then
+    error("opts.browser_timeout must be a non-negative number", 3)
+  end
+end
+
 -- Setup function
 function M.setup(opts)
-  M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+  if opts ~= nil and type(opts) ~= "table" then
+    error("opts must be a table or nil", 2)
+  end
+  validate_config(opts)
+  opts = opts or {}
+  local merged = vim.tbl_deep_extend("force", M.config, opts)
+  for _, key in ipairs({ "marp_command", "browser", "browser_kind", "theme_set" }) do
+    if type(opts[key]) == "table" then
+      merged[key] = vim.deepcopy(opts[key])
+    end
+  end
+  M.config = merged
 end
 
 -- Helper function to clean ANSI escape sequences
@@ -62,103 +134,379 @@ local function clean_ansi(str)
   return str:gsub("\27%[[%d;]*m", ""):gsub("\27%[[%d;]*[A-Za-z]", "")
 end
 
--- Find project root by looking for Marp config files
-local function find_marp_config_dir(file_path)
-  local config_names = {
-    ".marprc.yml",
-    ".marprc.yaml",
-    ".marprc.json",
-    ".marprc.js",
-    "marp.config.js",
-    "marp.config.mjs",
-    "marp.config.cjs",
-  }
-  local dir = vim.fn.fnamemodify(file_path, ":h")
-  while dir ~= "/" and dir ~= "" do
-    for _, name in ipairs(config_names) do
-      if vim.fn.filereadable(dir .. "/" .. name) == 1 then
-        return dir
+local function uri_encode_segment(str)
+  return (str:gsub("[^%w%-._~]", function(char)
+    return string.format("%%%02X", string.byte(char))
+  end))
+end
+
+local function get_marp_config(file_path)
+  if type(M.config.config_file) == "string" and M.config.config_file ~= "" then
+    local config_path = vim.fn.fnamemodify(M.config.config_file, ":p")
+    return config_path, vim.fn.fnamemodify(config_path, ":h")
+  end
+
+  return cli.find_config(file_path)
+end
+
+local function append_args(target, source)
+  for _, value in ipairs(source or {}) do
+    table.insert(target, value)
+  end
+end
+
+local function common_args()
+  local config = M.config
+  if type(config.config_file) == "string" and config.config_file ~= "" then
+    config = vim.deepcopy(config)
+    config.config_file = vim.fn.fnamemodify(config.config_file, ":p")
+  end
+  return cli.common_args(config)
+end
+
+local function append_shared_args(args)
+  if M.config.allow_local_files then
+    table.insert(args, "--allow-local-files")
+  end
+  append_args(args, common_args())
+end
+
+local function file_args(file, args)
+  args = vim.deepcopy(args or {})
+  append_shared_args(args)
+  table.insert(args, file)
+  return args
+end
+
+-- Get Marp executable argv. A list is recommended when the command has args.
+local function get_marp_cmd()
+  return cli.resolve_command(M.config.marp_command)
+end
+
+local function build_marp_argv(args)
+  return cli.build_argv(get_marp_cmd(), args)
+end
+
+local function system_options(opts)
+  return vim.tbl_extend("force", {
+    text = true,
+    env = cli.process_env(M.config),
+  }, opts or {})
+end
+
+local function start_marp(args, opts, on_exit)
+  local ok, process = pcall(vim.system, build_marp_argv(args), system_options(opts), on_exit)
+  if not ok then
+    vim.notify("[Marp] Failed to start: " .. tostring(process), vim.log.levels.ERROR)
+    return nil
+  end
+  return process
+end
+
+local function stream_lines(on_line)
+  local pending = ""
+
+  return function(err, data)
+    if err then
+      vim.schedule(function()
+        vim.notify("[Marp] Process stream error: " .. err, vim.log.levels.ERROR)
+      end)
+      return
+    end
+
+    if data then
+      pending = pending .. data
+    end
+
+    while true do
+      local newline = pending:find("\n", 1, true)
+      if not newline then
+        break
+      end
+
+      local line = pending:sub(1, newline - 1):gsub("\r$", "")
+      pending = pending:sub(newline + 1)
+      if line ~= "" then
+        vim.schedule(function()
+          on_line(line)
+        end)
       end
     end
-    local parent = vim.fn.fnamemodify(dir, ":h")
-    if parent == dir then
-      break
-    end
-    dir = parent
-  end
-  return vim.fn.fnamemodify(file_path, ":h")
-end
 
--- Build NODE_OPTIONS env prefix for Node.js compatibility
-local function get_node_env_prefix()
-  if M.config.node_options and M.config.node_options ~= "" then
-    return "NODE_OPTIONS=" .. M.config.node_options .. " "
-  end
-  return ""
-end
-
--- Build common options applied to all marp invocations (theme-set, etc.)
-local function get_common_options()
-  local opts = {}
-  for _, path in ipairs(M.config.theme_set or {}) do
-    table.insert(opts, "--theme-set '" .. path .. "'")
-  end
-  if #opts > 0 then
-    return " " .. table.concat(opts, " ")
-  end
-  return ""
-end
-
--- Build format-specific options for export
-local function get_export_options(format)
-  local opts = {}
-  if format == "pdf" then
-    if M.config.pdf_notes then
-      table.insert(opts, "--pdf-notes")
-    end
-    if M.config.pdf_outlines then
-      table.insert(opts, "--pdf-outlines")
-    end
-  elseif format == "pptx" then
-    if M.config.pptx_editable then
-      table.insert(opts, "--pptx-editable")
+    if data == nil and pending ~= "" then
+      local line = pending
+      pending = ""
+      vim.schedule(function()
+        on_line(line)
+      end)
     end
   end
-  if format == "png" or format == "jpeg" or format == "thumbnail_png" or format == "thumbnail_jpeg" then
-    if M.config.image_scale ~= 1 then
-      table.insert(opts, "--image-scale " .. M.config.image_scale)
+end
+
+local function start_one_shot(args, cwd, label, on_success)
+  return start_marp(
+    args,
+    { cwd = cwd },
+    vim.schedule_wrap(function(result)
+      if M.config.debug then
+        if result.stdout and result.stdout ~= "" then
+          vim.notify("[" .. label .. " stdout] " .. vim.trim(clean_ansi(result.stdout)), vim.log.levels.DEBUG)
+        end
+        if result.stderr and result.stderr ~= "" then
+          vim.notify("[" .. label .. " stderr] " .. vim.trim(clean_ansi(result.stderr)), vim.log.levels.DEBUG)
+        end
+      end
+
+      if result.code == 0 then
+        on_success(result)
+      else
+        local detail = result.stderr and vim.trim(clean_ansi(result.stderr)) or ""
+        local message = label .. " failed (exit code " .. result.code .. ")"
+        if detail ~= "" then
+          message = message .. ": " .. detail
+        end
+        vim.notify(message, vim.log.levels.ERROR)
+      end
+    end)
+  )
+end
+
+local function next_process_generation(bufnr)
+  local generation = (M.metadata.process_generations[bufnr] or 0) + 1
+  M.metadata.process_generations[bufnr] = generation
+  return generation
+end
+
+local function request_process_stop(bufnr, silent)
+  local process = M.active_processes[bufnr]
+
+  -- Invalidate both a running process and any deferred automatic restart.
+  next_process_generation(bufnr)
+  M.metadata.process_retries[bufnr] = 999
+  M.metadata.browser_opened[bufnr] = nil
+
+  if not process then
+    return false
+  end
+
+  M.metadata.stopping_processes[bufnr] = {
+    process = process,
+    silent = silent,
+  }
+
+  local success = pcall(process.kill, process, 15)
+  if not success then
+    M.metadata.stopping_processes[bufnr] = nil
+    vim.notify("Failed to stop Marp process", vim.log.levels.WARN)
+    return true
+  end
+
+  -- Retain the handle until the exit callback runs, and escalate if SIGTERM is
+  -- ignored. This also keeps replacement watches from overlapping.
+  vim.defer_fn(function()
+    if M.active_processes[bufnr] == process then
+      pcall(process.kill, process, 9)
+    end
+  end, 1000)
+
+  return true
+end
+
+local function wait_for_process_exit(bufnr)
+  if vim.wait(1100, function()
+    return M.active_processes[bufnr] == nil
+  end, 20) then
+    return true
+  end
+
+  local process = M.active_processes[bufnr]
+  if process then
+    pcall(process.kill, process, 9)
+  end
+
+  return vim.wait(1000, function()
+    return M.active_processes[bufnr] == nil
+  end, 20)
+end
+
+local function prepare_watch_output(bufnr, html_file, server_mode)
+  if server_mode then
+    M.metadata.html_files[bufnr] = nil
+    return
+  end
+
+  M.metadata.html_files[bufnr] = html_file
+  vim.notify("HTML file: " .. html_file, vim.log.levels.INFO)
+
+  if M.config.auto_copy_path then
+    vim.fn.setreg("+", html_file)
+    vim.notify("✓ Path copied to clipboard", vim.log.levels.INFO)
+  end
+
+  if M.config.suggest_gitignore then
+    M.check_gitignore(html_file)
+  end
+end
+
+local function generate_initial_html(bufnr, file, html_file, project_root, generation)
+  vim.notify("Generating initial HTML...", vim.log.levels.INFO)
+  local args = {}
+  if M.config.html_option then
+    table.insert(args, "--html")
+  end
+  table.insert(args, "--output")
+  table.insert(args, html_file)
+
+  local process = start_marp(file_args(file, args), { cwd = project_root })
+  if not process then
+    return false
+  end
+
+  local result = process:wait()
+  if result.code ~= 0 then
+    vim.notify("Failed to generate initial HTML: " .. (result.stderr or ""), vim.log.levels.ERROR)
+    return false
+  end
+
+  vim.wait(500, function()
+    return vim.fn.filereadable(html_file) == 1
+  end)
+  if vim.fn.filereadable(html_file) ~= 1 then
+    vim.notify("Failed to create HTML file", vim.log.levels.ERROR)
+    return false
+  end
+
+  vim.notify("✅ Initial HTML generated", vim.log.levels.INFO)
+  vim.defer_fn(function()
+    if
+      M.metadata.process_generations[bufnr] == generation
+      and not M.metadata.browser_opened[bufnr]
+      and vim.api.nvim_buf_is_valid(bufnr)
+    then
+      M.open_browser(vim.uri_from_fname(html_file))
+      M.metadata.browser_opened[bufnr] = true
+    end
+  end, 200)
+  return true
+end
+
+local function watch_output_handler(bufnr, file, server_mode, generation)
+  local last_update_time = 0
+
+  return function(line)
+    if M.metadata.process_generations[bufnr] ~= generation then
+      return
+    end
+
+    local clean_line = clean_ansi(line)
+    vim.notify("[Marp] " .. clean_line, vim.log.levels.INFO)
+
+    if server_mode and not M.metadata.browser_opened[bufnr] then
+      local server_url = clean_line:match("(https?://localhost:%d+/?)")
+      if server_url then
+        if not server_url:match("/$") then
+          server_url = server_url .. "/"
+        end
+        M.open_browser(server_url .. uri_encode_segment(vim.fn.fnamemodify(file, ":t")))
+        M.metadata.browser_opened[bufnr] = true
+      end
+    end
+
+    if clean_line:match("=>") or clean_line:match("has been written") then
+      local current_time = vim.uv.now()
+      if current_time - last_update_time > 1000 then
+        vim.notify("🔄 HTML updated", vim.log.levels.INFO)
+        last_update_time = current_time
+      end
     end
   end
-  if (format == "jpeg" or format == "thumbnail_jpeg") and M.config.jpeg_quality ~= 85 then
-    table.insert(opts, "--jpeg-quality " .. M.config.jpeg_quality)
-  end
-  if #opts > 0 then
-    return " " .. table.concat(opts, " ")
-  end
-  return ""
 end
 
--- Get Marp executable
-local function get_marp_cmd()
-  local env_prefix = get_node_env_prefix()
-
-  -- First check if custom command is set
-  if M.config.marp_command and M.config.marp_command ~= "" then
-    return env_prefix .. M.config.marp_command
-  end
-
-  -- Check if marp is available locally
-  local marp_check = vim.fn.system("which marp")
-  if vim.v.shell_error == 0 and marp_check ~= "" then
-    return env_prefix .. vim.trim(marp_check)
-  end
-
-  -- Default to npx
-  return env_prefix .. "npx @marp-team/marp-cli@latest"
+local function register_buffer_cleanup(bufnr)
+  local augroup = vim.api.nvim_create_augroup("marp.nvim", { clear = false })
+  vim.api.nvim_clear_autocmds({
+    group = augroup,
+    event = { "BufDelete", "BufWipeout" },
+    buffer = bufnr,
+  })
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = augroup,
+    buffer = bufnr,
+    once = true,
+    desc = "Stop Marp when its source buffer closes",
+    callback = function()
+      M.stop(bufnr, true)
+    end,
+  })
 end
 
--- Watch current file with Marp
-function M.watch()
+local function start_watch_process(bufnr, file, args, project_root, server_mode, generation)
+  local handle_output = watch_output_handler(bufnr, file, server_mode, generation)
+  local process
+  process = start_marp(
+    args,
+    {
+      cwd = project_root,
+      stdout = stream_lines(handle_output),
+      stderr = stream_lines(handle_output),
+    },
+    vim.schedule_wrap(function(result)
+      if M.active_processes[bufnr] == process then
+        M.active_processes[bufnr] = nil
+      end
+
+      local stopping = M.metadata.stopping_processes[bufnr]
+      if stopping and stopping.process == process then
+        M.metadata.stopping_processes[bufnr] = nil
+        if not stopping.silent then
+          vim.notify("Marp process stopped", vim.log.levels.INFO)
+        end
+        return
+      end
+
+      if M.metadata.process_generations[bufnr] ~= generation then
+        return
+      end
+
+      if result.code ~= 0 and result.signal ~= 15 then
+        vim.notify("Marp process exited with code: " .. result.code, vim.log.levels.WARN)
+        local retries = M.metadata.process_retries[bufnr] or 0
+        if retries < 3 and vim.api.nvim_buf_is_valid(bufnr) then
+          retries = retries + 1
+          M.metadata.process_retries[bufnr] = retries
+          vim.notify("Restarting Marp process (attempt " .. retries .. "/3)...", vim.log.levels.INFO)
+          vim.defer_fn(function()
+            if
+              M.metadata.process_generations[bufnr] == generation
+              and vim.api.nvim_buf_is_valid(bufnr)
+              and not M.active_processes[bufnr]
+            then
+              vim.api.nvim_buf_call(bufnr, function()
+                M.watch(generation)
+              end)
+            end
+          end, 2000)
+        else
+          vim.notify("Marp process retry limit reached", vim.log.levels.ERROR)
+        end
+      else
+        vim.notify("Marp process stopped", vim.log.levels.INFO)
+      end
+    end)
+  )
+
+  if not process then
+    vim.notify("Failed to start Marp process", vim.log.levels.ERROR)
+    return
+  end
+
+  M.active_processes[bufnr] = process
+  vim.notify("Marp process started (PID: " .. process.pid .. ")", vim.log.levels.INFO)
+  register_buffer_cleanup(bufnr)
+end
+
+-- Watch current file with Marp. retry_generation is private lifecycle state.
+function M.watch(retry_generation)
   local bufnr = vim.api.nvim_get_current_buf()
   local file = vim.api.nvim_buf_get_name(bufnr)
 
@@ -172,242 +520,194 @@ function M.watch()
     return
   end
 
-  -- Stop existing process for this buffer
-  if M.active_processes[bufnr] then
-    vim.notify("Stopping existing Marp process...", vim.log.levels.INFO)
-    M.stop(bufnr)
-    -- Wait for process to stop completely
-    vim.wait(1000, function()
-      return M.active_processes[bufnr] == nil
-    end)
-
-    -- Force cleanup if still exists
+  local generation
+  if retry_generation ~= nil then
+    if M.metadata.process_generations[bufnr] ~= retry_generation then
+      return
+    end
+    generation = retry_generation
+  else
     if M.active_processes[bufnr] then
-      local job_id = M.active_processes[bufnr]
-      pcall(vim.fn.jobstop, job_id)
-      M.active_processes[bufnr] = nil
+      vim.notify("Stopping existing Marp process...", vim.log.levels.INFO)
+      request_process_stop(bufnr, true)
+      if not wait_for_process_exit(bufnr) then
+        vim.notify("Could not stop the existing Marp process", vim.log.levels.ERROR)
+        return
+      end
     end
+    generation = next_process_generation(bufnr)
+    M.metadata.process_retries[bufnr] = 0
+    M.metadata.browser_opened[bufnr] = false
   end
 
-  -- Reset metadata for this buffer
-  M.metadata.process_retries[bufnr] = 0
-  M.metadata.browser_opened[bufnr] = false
-
-  local marp_cmd = get_marp_cmd()
-  local project_root = find_marp_config_dir(file)
-  local allow_local = M.config.allow_local_files and " --allow-local-files" or ""
-  local common_opts = get_common_options()
-
-  -- Calculate HTML file path
+  local _, project_root = get_marp_config(file)
   local html_file = file:gsub("%.md$", ".html")
-  M.metadata.html_files[bufnr] = html_file
-
-  -- Choose between server mode (-s) or watch mode (--watch) based on config
-  local cmd
-  if M.config.server_mode then
-    cmd = string.format("%s -s '%s'%s%s", marp_cmd, file, allow_local, common_opts)
+  local server_mode = M.config.server_mode
+  local action_args = {}
+  if server_mode then
+    table.insert(action_args, "--server")
+    table.insert(action_args, vim.fn.fnamemodify(file, ":h"))
+    append_shared_args(action_args)
   else
-    -- Use --watch with optional --html flag
-    local html_option = M.config.html_option and " --html" or ""
-    cmd = string.format("%s --watch '%s'%s%s%s", marp_cmd, file, html_option, allow_local, common_opts)
-  end
-
-  -- Show HTML file path
-  vim.notify("HTML file: " .. html_file, vim.log.levels.INFO)
-
-  -- Copy to clipboard if enabled
-  if M.config.auto_copy_path then
-    vim.fn.setreg("+", html_file)
-    vim.notify("✓ Path copied to clipboard", vim.log.levels.INFO)
-  end
-
-  -- Check if HTML should be gitignored
-  if M.config.suggest_gitignore then
-    M.check_gitignore(html_file)
-  end
-
-  -- Debug output the command
-  vim.notify("Starting Marp: " .. cmd, vim.log.levels.INFO)
-
-  -- First generate HTML file if in watch mode
-  if not M.config.server_mode then
-    vim.notify("Generating initial HTML...", vim.log.levels.INFO)
-    local html_option = M.config.html_option and " --html" or ""
-    local init_cmd = string.format(
-      "cd '%s' && %s '%s'%s%s%s -o '%s'",
-      project_root,
-      marp_cmd,
-      file,
-      html_option,
-      allow_local,
-      common_opts,
-      html_file
-    )
-    local result = vim.fn.system(init_cmd)
-
-    if vim.v.shell_error ~= 0 then
-      vim.notify("Failed to generate initial HTML: " .. result, vim.log.levels.ERROR)
-      return
+    table.insert(action_args, "--watch")
+    if M.config.html_option then
+      table.insert(action_args, "--html")
     end
+    action_args = file_args(file, action_args)
+  end
+  prepare_watch_output(bufnr, html_file, server_mode)
+  vim.notify("Starting Marp: " .. table.concat(build_marp_argv(action_args), " "), vim.log.levels.INFO)
 
-    -- Wait for file to be created
-    vim.wait(500, function()
-      return vim.fn.filereadable(html_file) == 1
-    end)
-
-    if vim.fn.filereadable(html_file) == 1 then
-      vim.notify("✅ Initial HTML generated", vim.log.levels.INFO)
-      -- Delay browser opening to ensure file is ready
-      vim.defer_fn(function()
-        if not M.metadata.browser_opened[bufnr] then
-          M.open_browser("file://" .. html_file)
-          M.metadata.browser_opened[bufnr] = true
-        end
-      end, 200)
-    else
-      vim.notify("Failed to create HTML file", vim.log.levels.ERROR)
-      return
-    end
+  if not server_mode and not generate_initial_html(bufnr, file, html_file, project_root, generation) then
+    return
   end
 
-  -- Start Marp in a terminal
-  local last_update_time = 0
-  local update_debounce_ms = 1000 -- Debounce HTML update notifications
-
-  -- Use shell to execute the command properly
-  local shell_cmd = { "/bin/sh", "-c", cmd }
-  local job_id = vim.fn.jobstart(shell_cmd, {
-    cwd = project_root,
-    pty = true, -- Use pseudo-terminal for proper output capture
-    stdout_buffered = false,
-    stderr_buffered = false,
-    on_stdout = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-
-            -- Always show all output to see what's happening
-            vim.notify("[Marp] " .. clean_line, vim.log.levels.INFO)
-
-            -- Check for file conversion patterns with debouncing
-            if clean_line:match("=>") or clean_line:match("has been written") then
-              local current_time = vim.loop.now()
-              if current_time - last_update_time > update_debounce_ms then
-                vim.notify("🔄 HTML updated", vim.log.levels.INFO)
-                last_update_time = current_time
-              end
-            end
-          end)
-        end
-      end
-    end,
-    on_stderr = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-
-            -- Always show all output to see what's happening
-            vim.notify("[Marp] " .. clean_line, vim.log.levels.INFO)
-
-            -- Check for file conversion patterns with debouncing
-            if clean_line:match("=>") or clean_line:match("has been written") then
-              local current_time = vim.loop.now()
-              if current_time - last_update_time > update_debounce_ms then
-                vim.notify("🔄 HTML updated", vim.log.levels.INFO)
-                last_update_time = current_time
-              end
-            end
-          end)
-        end
-      end
-    end,
-    on_exit = function(_, exit_code)
-      M.active_processes[bufnr] = nil
-
-      if exit_code ~= 0 and exit_code ~= 143 then -- 143 is SIGTERM
-        vim.notify("Marp process exited with code: " .. exit_code, vim.log.levels.WARN)
-
-        -- Auto-restart if it crashed (not user-initiated stop)
-        local retries = M.metadata.process_retries[bufnr] or 0
-        if retries < 3 and vim.api.nvim_buf_is_valid(bufnr) then
-          M.metadata.process_retries[bufnr] = retries + 1
-          vim.notify("Restarting Marp process (attempt " .. (retries + 1) .. "/3)...", vim.log.levels.INFO)
-          vim.defer_fn(function()
-            if vim.api.nvim_buf_is_valid(bufnr) then
-              M.watch()
-            end
-          end, 2000)
-        end
-      else
-        vim.notify("Marp server stopped", vim.log.levels.INFO)
-      end
-    end,
-  })
-
-  if job_id > 0 then
-    M.active_processes[bufnr] = job_id
-    vim.notify("Marp process started (job ID: " .. job_id .. ")", vim.log.levels.INFO)
-
-    -- Set up autocmd to stop process when buffer is deleted/wiped
-    vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
-      buffer = bufnr,
-      once = true,
-      callback = function()
-        M.stop(bufnr)
-      end,
-    })
-  else
-    vim.notify("Failed to start Marp server", vim.log.levels.ERROR)
-  end
+  start_watch_process(bufnr, file, action_args, project_root, server_mode, generation)
 end
 
 -- Stop Marp process for buffer
-function M.stop(bufnr)
+function M.stop(bufnr, silent)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
-  local job_id = M.active_processes[bufnr]
-
-  if job_id then
-    -- Prevent auto-restart
-    M.metadata.process_retries[bufnr] = 999
-
-    -- Try to stop the job gracefully
-    local success = pcall(function()
-      vim.fn.jobstop(job_id)
-    end)
-
-    if success then
-      vim.notify("Marp process stopped", vim.log.levels.INFO)
-    else
-      -- Force kill if graceful stop failed
-      pcall(function()
-        vim.fn.system("kill -9 " .. job_id)
-      end)
-      vim.notify("Force stopped Marp process", vim.log.levels.WARN)
-    end
-
-    M.active_processes[bufnr] = nil
-
-    -- Clean up metadata
-    M.metadata.process_retries[bufnr] = nil
-    M.metadata.browser_opened[bufnr] = nil
-  else
+  if not request_process_stop(bufnr, silent) and not silent then
     vim.notify("No active Marp process for this buffer", vim.log.levels.INFO)
   end
 end
 
 -- Stop all Marp processes
-function M.stop_all()
-  for bufnr, job_id in pairs(M.active_processes) do
-    vim.fn.jobstop(job_id)
+function M.stop_all(silent)
+  local buffers = vim.tbl_keys(M.active_processes)
+  if #buffers == 0 then
+    if not silent then
+      vim.notify("No active Marp processes", vim.log.levels.INFO)
+    end
+    return
   end
-  M.active_processes = {}
-  vim.notify("All Marp servers stopped", vim.log.levels.INFO)
+  for _, bufnr in ipairs(buffers) do
+    request_process_stop(bufnr, true)
+  end
+  if not silent then
+    vim.notify("Stopping all Marp processes", vim.log.levels.INFO)
+  end
+end
+
+local function image_output_spec(output_base, format)
+  local directory = vim.fn.fnamemodify(output_base, ":h")
+  local basename = vim.fn.fnamemodify(output_base, ":t")
+  local lower = basename:lower()
+  if lower:match("%.png$") then
+    basename = basename:sub(1, -5)
+  elseif lower:match("%.jpg$") or lower:match("%.jpeg$") then
+    basename = basename:sub(1, lower:match("%.jpeg$") and -6 or -5)
+  end
+
+  local extension = format == "jpeg" and "jpg" or "png"
+  local pattern = "^" .. basename:gsub("([^%w])", "%%%1") .. "%.%d+%." .. extension .. "$"
+  return directory, pattern
+end
+
+local function scan_image_outputs(output_base, format)
+  local directory, pattern = image_output_spec(output_base, format)
+  local paths = {}
+  local ok, iterator = pcall(vim.fs.dir, directory)
+  if ok and iterator then
+    for name, entry_type in iterator do
+      if entry_type == "file" and name:match(pattern) then
+        table.insert(paths, directory .. "/" .. name)
+      end
+    end
+  end
+  table.sort(paths)
+  return paths
+end
+
+local function file_fingerprint(path)
+  local stat = vim.uv.fs_stat(path)
+  if not stat then
+    return nil
+  end
+  return table.concat({ stat.size, stat.mtime.sec, stat.mtime.nsec }, ":")
+end
+
+local function image_output_snapshot(output_base, format)
+  local snapshot = {}
+  for _, path in ipairs(scan_image_outputs(output_base, format)) do
+    snapshot[path] = file_fingerprint(path)
+  end
+  return snapshot
+end
+
+local function current_image_outputs(result, output_base, format, project_root, previous)
+  local directory, pattern = image_output_spec(output_base, format)
+  directory = vim.fn.fnamemodify(directory, ":p")
+  local paths = {}
+  local seen = {}
+
+  for line in (clean_ansi(result.stdout or "") .. "\n"):gmatch("(.-)\r?\n") do
+    local path = line:match("=>%s+(.+)%s*$")
+    if path then
+      if not path:match("^/") and not path:match("^%a:[/\\]") then
+        path = project_root .. "/" .. path
+      end
+      path = vim.fn.fnamemodify(path, ":p")
+      if
+        vim.fn.fnamemodify(path, ":h") == directory
+        and vim.fn.fnamemodify(path, ":t"):match(pattern)
+        and vim.fn.filereadable(path) == 1
+        and not seen[path]
+      then
+        table.insert(paths, path)
+        seen[path] = true
+      end
+    end
+  end
+
+  -- Fall back to filesystem changes for wrappers that suppress Marp's stdout.
+  if #paths == 0 then
+    for _, path in ipairs(scan_image_outputs(output_base, format)) do
+      if previous[path] ~= file_fingerprint(path) then
+        table.insert(paths, path)
+      end
+    end
+  end
+
+  table.sort(paths)
+  return paths
+end
+
+local function record_export(format, paths)
+  M.metadata.last_export = {
+    format = format,
+    file = paths[1],
+    files = paths,
+    time = os.date("%Y-%m-%d %H:%M:%S"),
+  }
+
+  if #paths == 1 then
+    vim.notify("✅ Exported: " .. paths[1], vim.log.levels.INFO)
+  else
+    vim.notify("✅ Exported " .. #paths .. " files:\n" .. table.concat(paths, "\n"), vim.log.levels.INFO)
+  end
+
+  if M.config.show_file_size then
+    local total_size = 0
+    for _, path in ipairs(paths) do
+      if vim.fn.filereadable(path) == 1 then
+        total_size = total_size + vim.fn.getfsize(path)
+      end
+    end
+    if total_size > 0 then
+      vim.notify("📊 File size: " .. M.format_file_size(total_size), vim.log.levels.INFO)
+    end
+  end
+
+  if M.config.auto_copy_path then
+    vim.fn.setreg("+", table.concat(paths, "\n"))
+    vim.notify("✓ Path copied to clipboard", vim.log.levels.INFO)
+  end
 end
 
 -- Export current file
-function M.export(format)
+function M.export(format, output)
   local file = vim.api.nvim_buf_get_name(0)
 
   if file == "" or not file:match("%.md$") then
@@ -415,7 +715,9 @@ function M.export(format)
     return
   end
 
-  format = format or "html"
+  if format == nil or format == "" then
+    format = "html"
+  end
   local export_flag = M.config.export_formats[format]
 
   if not export_flag then
@@ -423,147 +725,82 @@ function M.export(format)
     return
   end
 
-  local marp_cmd = get_marp_cmd()
-  local project_root = find_marp_config_dir(file)
-  local allow_local = M.config.allow_local_files and " --allow-local-files" or ""
-  local common_opts = get_common_options()
-  local format_opts = get_export_options(format)
-  local output_file = file:gsub("%.md$", "")
-  local cmd = string.format("%s %s '%s'%s%s%s", marp_cmd, export_flag, file, allow_local, common_opts, format_opts)
+  local _, project_root = get_marp_config(file)
+  local args = cli.argv(export_flag)
+  append_args(args, cli.export_args(M.config, format))
 
-  -- Determine output filename
+  local output_file = file:gsub("%.md$", "")
   local ext_map = {
     html = ".html",
     pdf = ".pdf",
     pptx = ".pptx",
-    png = ".001.png",
-    jpeg = ".001.jpg",
     notes = ".txt",
   }
-  local output_path = output_file .. (ext_map[format] or "")
+  local output_path
+  local image_output_base
+  local previous_image_outputs
+  if output and output ~= "" then
+    if output:match("^/") or output:match("^%a:[/\\]") then
+      output_path = output
+    else
+      output_path = project_root .. "/" .. output
+    end
+    output_path = vim.fn.fnamemodify(output_path, ":p")
+    table.insert(args, "--output")
+    table.insert(args, output_path)
+    if format == "png" or format == "jpeg" then
+      image_output_base = output_path
+    end
+  elseif format == "png" or format == "jpeg" then
+    image_output_base = output_file
+    local extension = format == "jpeg" and ".001.jpg" or ".001.png"
+    output_path = output_file .. extension
+  else
+    output_path = output_file .. (ext_map[format] or "")
+  end
+  if image_output_base then
+    previous_image_outputs = image_output_snapshot(image_output_base, format)
+  end
+  args = file_args(file, args)
 
   vim.notify("📤 Exporting to " .. format .. "...", vim.log.levels.INFO)
 
-  local shell_cmd = { "/bin/sh", "-c", cmd }
-  vim.fn.jobstart(shell_cmd, {
-    cwd = project_root,
-    stdout_buffered = false,
-    stderr_buffered = false,
-    detach = true,
-    on_stdout = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            if M.config.debug then
-              vim.notify("[Export stdout] " .. clean_line, vim.log.levels.DEBUG)
-            end
-          end)
-        end
+  start_one_shot(args, project_root, "Export", function(result)
+    local paths = { output_path }
+    if image_output_base then
+      paths = current_image_outputs(result, image_output_base, format, project_root, previous_image_outputs)
+      if #paths == 0 then
+        vim.notify("Export succeeded, but no numbered image outputs were found", vim.log.levels.WARN)
+        paths = { output_path }
       end
-    end,
-    on_stderr = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            if M.config.debug then
-              vim.notify("[Export stderr] " .. clean_line, vim.log.levels.DEBUG)
-            end
-          end)
-        end
-      end
-    end,
-    on_exit = function(_, exit_code)
-      if exit_code == 0 then
-        -- Store export info
-        M.metadata.last_export = {
-          format = format,
-          file = output_path,
-          time = os.date("%Y-%m-%d %H:%M:%S"),
-        }
-
-        vim.notify("✅ Exported: " .. output_path, vim.log.levels.INFO)
-
-        -- Show file size if enabled
-        if M.config.show_file_size and vim.fn.filereadable(output_path) == 1 then
-          local size = vim.fn.getfsize(output_path)
-          local size_str = M.format_file_size(size)
-          vim.notify("📊 File size: " .. size_str, vim.log.levels.INFO)
-        end
-
-        -- Copy path to clipboard
-        if M.config.auto_copy_path then
-          vim.fn.setreg("+", output_path)
-          vim.notify("✓ Path copied to clipboard", vim.log.levels.INFO)
-        end
-      else
-        vim.notify("❌ Export failed", vim.log.levels.ERROR)
-      end
-    end,
-  })
+    end
+    record_export(format, paths)
+  end)
 end
 
 -- Preview current file (one-time)
 function M.preview()
-  local file = vim.api.nvim_buf_get_name(0)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local file = vim.api.nvim_buf_get_name(bufnr)
 
   if file == "" or not file:match("%.md$") then
     vim.notify("Not a markdown file", vim.log.levels.ERROR)
     return
   end
 
-  local marp_cmd = get_marp_cmd()
-  local project_root = find_marp_config_dir(file)
-  local allow_local = M.config.allow_local_files and " --allow-local-files" or ""
-  local common_opts = get_common_options()
-  local cmd = string.format("%s -p '%s'%s%s", marp_cmd, file, allow_local, common_opts)
+  local _, project_root = get_marp_config(file)
+  local html_file = file:gsub("%.md$", ".html")
+  local args = { "--html" }
+  table.insert(args, "--output")
+  table.insert(args, html_file)
+  args = file_args(file, args)
 
-  local shell_cmd = { "/bin/sh", "-c", cmd }
-  vim.fn.jobstart(shell_cmd, {
-    cwd = project_root,
-    stdout_buffered = false,
-    stderr_buffered = false,
-    detach = true,
-    on_stdout = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            if M.config.debug then
-              vim.notify("[Preview stdout] " .. clean_line, vim.log.levels.DEBUG)
-            end
-
-            if clean_line:match("http://localhost:%d+") then
-              local url = clean_line:match("(http://localhost:%d+[^%s]*)")
-              if url then
-                M.open_browser(url)
-              end
-            end
-          end)
-        end
-      end
-    end,
-    on_stderr = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            if M.config.debug then
-              vim.notify("[Preview stderr] " .. clean_line, vim.log.levels.DEBUG)
-            end
-
-            if clean_line:match("http://localhost:%d+") then
-              local url = clean_line:match("(http://localhost:%d+[^%s]*)")
-              if url then
-                M.open_browser(url)
-              end
-            end
-          end)
-        end
-      end
-    end,
-  })
+  vim.notify("Generating preview...", vim.log.levels.INFO)
+  start_one_shot(args, project_root, "Preview", function()
+    M.metadata.html_files[bufnr] = html_file
+    M.open_browser(vim.uri_from_fname(html_file))
+    vim.notify("Preview opened: " .. html_file, vim.log.levels.INFO)
+  end)
 end
 
 -- Generate thumbnail from first slide
@@ -575,78 +812,27 @@ function M.thumbnail(format)
     return
   end
 
-  format = format or "png"
+  if format == nil or format == "" then
+    format = "png"
+  end
   if format ~= "png" and format ~= "jpeg" then
     vim.notify("Thumbnail format must be png or jpeg", vim.log.levels.ERROR)
     return
   end
 
-  local marp_cmd = get_marp_cmd()
-  local project_root = find_marp_config_dir(file)
-  local allow_local = M.config.allow_local_files and " --allow-local-files" or ""
-  local common_opts = get_common_options()
-  local format_opts = get_export_options("thumbnail_" .. format)
-  local cmd = string.format("%s --image %s '%s'%s%s%s", marp_cmd, format, file, allow_local, common_opts, format_opts)
+  local _, project_root = get_marp_config(file)
+  local args = { "--image", format }
+  append_args(args, cli.export_args(M.config, "thumbnail_" .. format))
+  args = file_args(file, args)
 
   local ext = format == "jpeg" and ".jpg" or ".png"
   local output_path = file:gsub("%.md$", ext)
 
   vim.notify("Generating thumbnail...", vim.log.levels.INFO)
 
-  local shell_cmd = { "/bin/sh", "-c", cmd }
-  vim.fn.jobstart(shell_cmd, {
-    cwd = project_root,
-    stdout_buffered = false,
-    stderr_buffered = false,
-    detach = true,
-    on_stdout = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            if M.config.debug then
-              vim.notify("[Thumbnail stdout] " .. clean_line, vim.log.levels.DEBUG)
-            end
-          end)
-        end
-      end
-    end,
-    on_stderr = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            if M.config.debug then
-              vim.notify("[Thumbnail stderr] " .. clean_line, vim.log.levels.DEBUG)
-            end
-          end)
-        end
-      end
-    end,
-    on_exit = function(_, exit_code)
-      if exit_code == 0 then
-        M.metadata.last_export = {
-          format = "thumbnail_" .. format,
-          file = output_path,
-          time = os.date("%Y-%m-%d %H:%M:%S"),
-        }
-
-        vim.notify("Thumbnail: " .. output_path, vim.log.levels.INFO)
-
-        if M.config.show_file_size and vim.fn.filereadable(output_path) == 1 then
-          local size = vim.fn.getfsize(output_path)
-          vim.notify("File size: " .. M.format_file_size(size), vim.log.levels.INFO)
-        end
-
-        if M.config.auto_copy_path then
-          vim.fn.setreg("+", output_path)
-          vim.notify("Path copied to clipboard", vim.log.levels.INFO)
-        end
-      else
-        vim.notify("Thumbnail generation failed", vim.log.levels.ERROR)
-      end
-    end,
-  })
+  start_one_shot(args, project_root, "Thumbnail", function()
+    record_export("thumbnail_" .. format, { output_path })
+  end)
 end
 
 -- Set theme
@@ -759,38 +945,53 @@ end
 -- Open browser
 function M.open_browser(url)
   local cmd
+  if type(M.config.browser) == "table" then
+    cmd = vim.deepcopy(M.config.browser)
+    table.insert(cmd, url)
+  elseif M.config.browser then
+    cmd = { M.config.browser, url }
+  end
 
-  if M.config.browser then
-    cmd = M.config.browser .. " '" .. url .. "'"
-  elseif vim.fn.has("mac") == 1 then
-    cmd = "open '" .. url .. "'"
-  elseif vim.fn.has("unix") == 1 then
-    cmd = "xdg-open '" .. url .. "' 2>/dev/null"
-  elseif vim.fn.has("win32") == 1 then
-    cmd = 'start "" "' .. url .. '"'
-  else
-    vim.notify("Could not detect browser", vim.log.levels.ERROR)
+  -- An explicit opener always takes precedence over Neovim's default.
+  if cmd then
+    local ok, result = pcall(vim.system, cmd, { detach = true })
+    if not ok then
+      vim.notify("[Marp] Failed to start browser: " .. tostring(result), vim.log.levels.ERROR)
+    end
     return
   end
 
-  local job_id = vim.fn.jobstart(cmd, {
-    detach = true,
-    on_exit = function(_, exit_code)
-      if exit_code ~= 0 then
-        vim.notify("Failed to open browser", vim.log.levels.WARN)
-      end
-    end,
-  })
+  if vim.ui and vim.ui.open then
+    local ok, process, error_message = pcall(vim.ui.open, url)
+    if ok and process then
+      return
+    end
+    local detail = ok and error_message or process
+    vim.notify("[Marp] vim.ui.open failed: " .. tostring(detail) .. ", falling back", vim.log.levels.WARN)
+  end
 
-  if job_id <= 0 then
-    vim.notify("Failed to start browser", vim.log.levels.ERROR)
+  -- Fallback for environments without a working default opener.
+  if vim.fn.has("mac") == 1 then
+    cmd = { "open", url }
+  elseif vim.fn.has("unix") == 1 then
+    cmd = { "xdg-open", url }
+  elseif vim.fn.has("win32") == 1 then
+    cmd = { "cmd", "/c", "start", "", url }
+  else
+    vim.notify("[Marp] Could not detect browser", vim.log.levels.ERROR)
+    return
+  end
+
+  local ok, result = pcall(vim.system, cmd, { detach = true })
+  if not ok then
+    vim.notify("[Marp] Failed to start browser: " .. tostring(result), vim.log.levels.ERROR)
   end
 end
 
--- List active servers
+-- List active processes
 function M.list_active()
   if vim.tbl_isempty(M.active_processes) then
-    vim.notify("No active Marp servers", vim.log.levels.INFO)
+    vim.notify("No active Marp processes", vim.log.levels.INFO)
     return
   end
 
@@ -800,7 +1001,7 @@ function M.list_active()
     table.insert(active, vim.fn.fnamemodify(name, ":t"))
   end
 
-  vim.notify("Active Marp servers:\n" .. table.concat(active, "\n"), vim.log.levels.INFO)
+  vim.notify("Active Marp processes:\n" .. table.concat(active, "\n"), vim.log.levels.INFO)
 end
 
 -- Format file size
@@ -833,23 +1034,6 @@ function M.check_gitignore(html_file)
       vim.notify("💡 Tip: Consider adding '*.html' to .gitignore", vim.log.levels.WARN)
     end
   end
-end
-
--- Show tips
-function M.show_tips()
-  local tips = {
-    "💡 Use :MarpExport pdf to export as PDF",
-    "💡 Press :MarpTheme gaia to change theme",
-    "💡 Use :MarpSnippet title for a title slide",
-    "💡 Add '---' to create a new slide",
-    "💡 Use :MarpInfo to see current settings",
-    "💡 HTML path is copied to clipboard automatically",
-  }
-
-  -- Show a random tip
-  math.randomseed(os.time())
-  local tip = tips[math.random(#tips)]
-  vim.notify(tip, vim.log.levels.INFO)
 end
 
 -- Show current Marp info
@@ -906,6 +1090,11 @@ function M.info()
     table.insert(info, "")
     table.insert(info, "Last Export:")
     table.insert(info, "  Format: " .. M.metadata.last_export.format)
+    if M.metadata.last_export.files and #M.metadata.last_export.files > 1 then
+      table.insert(info, "  Files: " .. #M.metadata.last_export.files)
+    else
+      table.insert(info, "  File: " .. M.metadata.last_export.file)
+    end
     table.insert(info, "  Time: " .. M.metadata.last_export.time)
   end
 
@@ -938,6 +1127,29 @@ function M.copy_html_path()
   end
 end
 
+-- Open the Marp CLI configuration detected for the current file
+function M.open_config()
+  local file = vim.api.nvim_buf_get_name(0)
+
+  if file == "" then
+    vim.notify("No file in current buffer", vim.log.levels.ERROR)
+    return
+  end
+
+  if M.config.config_file == false then
+    vim.notify("Marp config discovery is disabled", vim.log.levels.INFO)
+    return
+  end
+
+  local config_path = get_marp_config(file)
+  if not config_path or vim.fn.filereadable(config_path) ~= 1 then
+    vim.notify("No Marp config found", vim.log.levels.INFO)
+    return
+  end
+
+  vim.cmd("edit " .. vim.fn.fnameescape(config_path))
+end
+
 -- Debug function to test Marp command
 function M.debug()
   local bufnr = vim.api.nvim_get_current_buf()
@@ -949,8 +1161,9 @@ function M.debug()
   end
 
   local marp_cmd = get_marp_cmd()
-  local project_root = find_marp_config_dir(file)
-  local test_cmd = string.format("%s --version", marp_cmd)
+  local config_path, project_root = get_marp_config(file)
+  local test_args = { "--version" }
+  append_args(test_args, common_args())
 
   vim.notify("=== Marp Debug Info ===", vim.log.levels.INFO)
   vim.notify("Testing Marp command...", vim.log.levels.INFO)
@@ -959,26 +1172,11 @@ function M.debug()
   vim.notify("Buffer: " .. bufnr, vim.log.levels.INFO)
   vim.notify("File: " .. file, vim.log.levels.INFO)
   vim.notify("Project root: " .. project_root, vim.log.levels.INFO)
-  vim.notify("Active process: " .. (M.active_processes[bufnr] or "none"), vim.log.levels.INFO)
+  local active_process = M.active_processes[bufnr]
+  vim.notify("Active process: " .. (active_process and active_process.pid or "none"), vim.log.levels.INFO)
 
   -- Show detected config file
-  local config_names = {
-    ".marprc.yml",
-    ".marprc.yaml",
-    ".marprc.json",
-    ".marprc.js",
-    "marp.config.js",
-    "marp.config.mjs",
-    "marp.config.cjs",
-  }
-  local found_config = "none"
-  for _, name in ipairs(config_names) do
-    if vim.fn.filereadable(project_root .. "/" .. name) == 1 then
-      found_config = project_root .. "/" .. name
-      break
-    end
-  end
-  vim.notify("Config file: " .. found_config, vim.log.levels.INFO)
+  vim.notify("Config file: " .. (config_path or "none"), vim.log.levels.INFO)
 
   -- Show metadata
   if M.metadata.process_retries[bufnr] then
@@ -993,48 +1191,17 @@ function M.debug()
   vim.notify("Debug mode: " .. tostring(M.config.debug), vim.log.levels.INFO)
   vim.notify("Allow local files: " .. tostring(M.config.allow_local_files), vim.log.levels.INFO)
 
-  -- Test if marp command works
-  local shell_cmd = { "/bin/sh", "-c", test_cmd }
-  vim.fn.jobstart(shell_cmd, {
-    cwd = project_root,
-    stdout_buffered = false,
-    stderr_buffered = false,
-    detach = true,
-    on_stdout = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            vim.notify("Marp version: " .. clean_line, vim.log.levels.INFO)
-          end)
-        end
-      end
-    end,
-    on_stderr = function(_, data)
-      for _, line in ipairs(data) do
-        if line ~= "" then
-          vim.schedule(function()
-            local clean_line = clean_ansi(line)
-            vim.notify("Error: " .. clean_line, vim.log.levels.ERROR)
-          end)
-        end
-      end
-    end,
-    on_exit = function(_, exit_code)
-      if exit_code ~= 0 then
-        vim.notify("Marp command failed with exit code: " .. exit_code, vim.log.levels.ERROR)
-        vim.notify("Try installing with: npm install -g @marp-team/marp-cli", vim.log.levels.INFO)
-      else
-        vim.notify("✅ Marp command is working!", vim.log.levels.INFO)
-        vim.notify("Command: " .. marp_cmd, vim.log.levels.INFO)
+  start_one_shot(test_args, project_root, "Debug", function(result)
+    vim.notify("Marp version: " .. vim.trim(clean_ansi(result.stdout or "")), vim.log.levels.INFO)
+    vim.notify("✅ Marp command is working!", vim.log.levels.INFO)
+    vim.notify("Command: " .. table.concat(marp_cmd, " "), vim.log.levels.INFO)
 
-        -- Test browser command
-        vim.notify("Testing browser...", vim.log.levels.INFO)
-        local browser_cmd = M.config.browser or (vim.fn.has("mac") == 1 and "open" or "xdg-open")
-        vim.notify("Browser command: " .. browser_cmd, vim.log.levels.INFO)
-      end
-    end,
-  })
+    local browser_cmd = M.config.browser or (vim.fn.has("mac") == 1 and "open" or "xdg-open")
+    if type(browser_cmd) == "table" then
+      browser_cmd = table.concat(browser_cmd, " ")
+    end
+    vim.notify("Browser command: " .. browser_cmd, vim.log.levels.INFO)
+  end)
 end
 
 return M

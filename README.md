@@ -1,361 +1,398 @@
 # marp.nvim
 
-A Neovim plugin for [Marp](https://marp.app/) (Markdown Presentation Ecosystem).
+A Neovim plugin for creating, previewing, and exporting
+[Marp](https://marp.app/) slide decks.
 
-[日本語版](#日本語)
-
-## Features
-
-- 🔄 **Live Preview**: Watch mode with auto-refresh and real-time HTML generation (`MarpWatch`)
-- 🛑 **Auto Cleanup**: Automatically stops Marp server when buffer is closed
-- 📤 **Export**: Export presentations to HTML, PDF, PPTX, PNG, JPEG
-- 🎨 **Theme Support**: Easily switch between Marp themes
-- ✂️ **Snippets**: Insert common Marp elements quickly
-- 🖥️ **Preview**: One-time preview without watch mode
-- 🔧 **Dual Mode**: Support both server mode (-s) and watch mode (--watch)
-- 🐛 **Debug Mode**: Detailed logging for troubleshooting
-
-## Demo
+[日本語](#日本語)
 
 ![marp.nvim demo](.github/images/marp-nvim-demo.gif)
 
+## Highlights
+
+- Live preview with Marp CLI watch mode
+- Server mode that opens the current deck from Marp's HTTP server
+- One-time HTML preview without leaving a watcher behind
+- Export to HTML, PDF, PPTX, PNG, JPEG, and speaker-note text
+- First-slide thumbnail generation
+- Marp CLI v4 config discovery, including `marp.config.ts` and
+  `package.json#marp`
+- Browser, PDF outline, editable PPTX, image, and Bespoke template options
+- Native `:checkhealth marp` diagnostics
+- Safe argv-based process execution through `vim.system()`
+
+marp.nvim is tested with **Marp CLI v4.5.0**. The v4.5 release added ESM/import
+support to the standalone binary, improved CLI startup time, and fixed Firefox
+and macOS rendering issues. See the
+[official v4.5.0 release notes](https://github.com/marp-team/marp-cli/releases/tag/v4.5.0).
+
+## Requirements
+
+- Neovim 0.10 or newer
+- [Marp CLI](https://github.com/marp-team/marp-cli) v4
+- A supported browser for PDF, PPTX, PNG, and JPEG conversion
+- Node.js 18 or newer only when using the npm-distributed CLI
+
+Run `:checkhealth marp` after installation.
+
 ## Installation
 
-### Using [lazy.nvim](https://github.com/folke/lazy.nvim)
+### lazy.nvim
 
 ```lua
 {
   "nwiizo/marp.nvim",
-  ft = "markdown",
   config = function()
-    require("marp").setup {
-      -- Optional configuration
-      marp_command = "marp", -- default: "marp" (uses marp from PATH)
-      browser = nil, -- auto-detect
-      server_mode = false, -- Use watch mode (-w)
-    }
+    require("marp").setup({
+      -- Optional overrides
+    })
   end,
 }
 ```
 
-**Minimal setup:**
+The plugin registers lightweight commands at startup and loads its main module
+only when a command is used, so extra command-level lazy-loading is unnecessary.
+
+To use the latest CLI through `npx`, prefer an argv list:
+
 ```lua
-{
-  'nwiizo/marp.nvim'
-}
+require("marp").setup({
+  marp_command = { "npx", "@marp-team/marp-cli@latest" },
+})
 ```
 
-**With npx (if Marp is not installed locally):**
+A string such as `"npx @marp-team/marp-cli@latest"` remains supported for
+backward compatibility. Use a list when an executable path or argument contains
+spaces.
+
+### packer.nvim
+
 ```lua
-{
-  'nwiizo/marp.nvim',
+use({
+  "nwiizo/marp.nvim",
   config = function()
-    require('marp').setup({
-      marp_command = "npx @marp-team/marp-cli@latest",
-    })
-  end
-}
-```
-
-### Using [packer.nvim](https://github.com/wbthomason/packer.nvim)
-
-**Basic setup (works out of the box):**
-```lua
-use 'nwiizo/marp.nvim'
-```
-
-**With custom configuration:**
-```lua
-use {
-  'nwiizo/marp.nvim',
-  config = function()
-    require('marp').setup({
-      -- Optional configuration
-    })
-  end
-}
+    require("marp").setup({})
+  end,
+})
 ```
 
 ## Commands
 
 | Command | Description |
-|---------|-------------|
-| `:MarpWatch` | Start watching current file and open in browser |
-| `:MarpStop` | Stop watching current buffer |
-| `:MarpStopAll` | Stop all Marp servers |
-| `:MarpPreview` | One-time preview (opens and exits) |
-| `:MarpList` | List all active Marp servers |
-| `:MarpExport [format]` | Export to format (html/pdf/pptx/png/jpeg) |
-| `:MarpTheme [theme]` | Set theme (default/gaia/uncover) |
-| `:MarpSnippet [name]` | Insert snippet |
-| `:MarpInfo` | Show current Marp information |
-| `:MarpCopyPath` | Copy HTML file path to clipboard |
-| `:MarpDebug` | Run diagnostics to check Marp setup |
+| --- | --- |
+| `:MarpWatch` | Start live preview for the current Markdown deck |
+| `:MarpStop` | Stop the process for the current buffer |
+| `:MarpStopAll` | Stop all Marp processes |
+| `:MarpPreview` | Generate HTML once, open it, and exit |
+| `:MarpList` | List active watch/server processes |
+| `:MarpExport [format] [output]` | Export the deck; default format is `html` |
+| `:MarpThumbnail [png\|jpeg]` | Export only the first slide |
+| `:MarpTheme {theme}` | Set `default`, `gaia`, or `uncover` |
+| `:MarpSnippet {name}` | Insert a Marp snippet |
+| `:MarpInfo` | Show deck, theme, slide, process, and export information |
+| `:MarpCopyPath` | Copy the generated HTML path |
+| `:MarpConfig` | Open the Marp CLI config detected for the current deck |
+| `:MarpDebug` | Run an in-editor CLI diagnostic |
+| `:checkhealth marp` | Check Neovim, Marp CLI, stdin safety, and config |
 
-## Available Snippets
+Export examples:
 
-- `title` - Title slide with author and date
-- `columns` - Two-column layout
-- `image` - Image markdown
-- `bg_image` - Background image directive
-- `center` - Centered content
-- `speaker_notes` - Speaker notes comment
+```vim
+:MarpExport
+:MarpExport pdf
+:MarpExport pptx build/talk.pptx
+:MarpThumbnail jpeg
+```
+
+Formats are `html`, `pdf`, `pptx`, `png`, `jpeg`, and `notes`.
+PNG/JPEG deck exports create numbered files such as `talk.001.png`; marp.nvim
+reports and copies the paths that Marp actually created.
 
 ## Configuration
 
 ```lua
-require('marp').setup({
-  -- Marp CLI command (default: "marp", auto-detected from PATH)
-  marp_command = "marp",
+require("marp").setup({
+  -- Executable and project config
+  marp_command = "marp", -- string or argv list
+  config_file = nil, -- path; false disables Marp config discovery
+  node_options = "",
 
-  -- Browser command (nil = auto-detect)
+  -- Preview process
+  server_mode = false, -- false: --watch, true: --server
+  html_option = true,
+  no_stdin = true, -- keep enabled for Neovim jobs
+
+  -- Security: opt in only for trusted decks that need local assets
+  allow_local_files = false,
+
+  -- App used to open generated URLs; string or argv list, nil uses vim.ui.open()
   browser = nil,
 
-  -- Available themes
+  -- Browser used internally by Marp for PDF/PPTX/image conversion
+  browser_kind = nil, -- "auto", "chrome", "edge", "firefox", or a list
+  browser_path = nil,
+  browser_protocol = nil, -- "cdp" or "webdriver-bidi"
+  browser_timeout = nil, -- seconds; 0 disables the timeout
+
+  -- HTML template
+  template = nil, -- "bare" or "bespoke"
+  bespoke_osc = nil,
+  bespoke_progress = nil,
+  bespoke_transition = nil,
+
+  -- PDF/PPTX
+  pdf_notes = false,
+  pdf_outlines = false,
+  pdf_outlines_pages = nil,
+  pdf_outlines_headings = nil,
+  pptx_editable = false,
+
+  -- Images and themes
+  image_scale = 1,
+  jpeg_quality = 85,
+  theme_set = {},
   themes = {
     default = "default",
     gaia = "gaia",
-    uncover = "uncover"
+    uncover = "uncover",
   },
-  
-  -- Export formats
-  export_formats = {
-    html = "--html",
-    pdf = "--pdf",
-    pptx = "--pptx",
-    png = "--images png",
-    jpeg = "--images jpeg"
-  },
-  
-  -- New features
-  show_tips = true,           -- Show helpful tips
-  auto_copy_path = true,      -- Auto-copy file paths to clipboard
-  show_file_size = true,      -- Show file sizes after export
-  suggest_gitignore = true,   -- Suggest adding *.html to .gitignore
-  debug = false,              -- Enable debug logging (helpful for troubleshooting)
-  server_mode = false,        -- Use server mode (-s) or watch mode (--watch)
-  html_option = true          -- Use --html option in watch mode (default: true)
+
+  -- Notifications
+  auto_copy_path = true,
+  show_file_size = true,
+  suggest_gitignore = true,
+  debug = false,
 })
 ```
 
-## Usage Example
+`browser` opens the generated URL on the desktop; use an argv list when the
+opener needs arguments. `browser_kind` selects the browser engine Marp CLI uses
+for conversion; the two options are intentionally separate.
 
-1. Open a markdown file
-2. Run `:MarpWatch` to start live preview
-3. Edit your presentation - changes appear instantly
-4. Close the buffer or run `:MarpStop` to stop the server
+### Marp CLI config discovery
 
-## Requirements
+marp.nvim searches upward from the current deck using the same locations as
+Marp CLI's `cosmiconfig` integration:
 
-- Neovim 0.5+
-- [Marp CLI](https://github.com/marp-team/marp-cli) (auto-installed via npx if not found)
+- `package.json` with a top-level `marp` property
+- `.marprc*`
+- `.config/marprc*`
+- `marp.config.js`, `.ts`, `.cjs`, or `.mjs`
+
+The detected directory becomes the subprocess working directory. Set
+`config_file` to a path to force a config, or to `false` to pass
+`--no-config-file`.
+
+### Why `--no-stdin` is enabled
+
+Marp CLI exposes a hidden stdin input enabled by default. A Neovim process may
+provide a non-TTY stdin pipe, causing Marp to wait even when a Markdown path was
+passed. marp.nvim therefore adds `--no-stdin` to every file-based invocation.
+Set `no_stdin = false` only for a custom wrapper that does not accept this flag.
+This covers the hang reported in
+[PR #2](https://github.com/nwiizo/marp.nvim/pull/2) and
+[Issue #3](https://github.com/nwiizo/marp.nvim/issues/3).
+
+## Usage
+
+1. Open a Marp Markdown deck.
+2. Run `:MarpWatch`.
+3. Save the file to refresh the browser.
+4. Run `:MarpStop`, or close the buffer.
+
+Set `server_mode = true` to serve the deck directory over HTTP instead of
+writing watched HTML to disk.
 
 ## Troubleshooting
 
-### Watch mode not opening browser
+1. Run `:checkhealth marp`.
+2. Run `:MarpDebug` from a Markdown buffer.
+3. Enable `debug = true` to include CLI stdout/stderr in notifications.
+4. Check active processes with `:MarpList`, then use `:MarpStopAll`.
 
-If `:MarpWatch` doesn't open the browser automatically:
-
-1. Run `:MarpDebug` to check if Marp CLI is properly installed
-2. Enable debug mode to see detailed output:
-   ```lua
-   require('marp').setup({ debug = true })
-   ```
-3. Make sure you have a default browser set on your system
-4. Try manually opening the HTML file path (shown in the notification or copied to clipboard)
-
-### File changes not detected
-
-The plugin uses `--watch` mode by default. If changes aren't detected:
-
-1. Check if the Marp process is running: `:MarpList`
-2. Try stopping and restarting: `:MarpStop` then `:MarpWatch`
-3. Ensure the markdown file is saved to trigger updates
-4. Enable debug mode to see Marp output: `require('marp').setup({ debug = true })`
-
-### Server mode vs Watch mode
-
-By default, the plugin uses watch mode (`--watch`) which generates HTML files and watches for changes. You can switch to server mode (`-s`) which serves files via HTTP:
-
-```lua
-require('marp').setup({ server_mode = true })
-```
+If local images do not render during PDF/PPTX/image conversion, enable
+`allow_local_files` only for decks you trust.
 
 ---
 
 # 日本語
 
-[Marp](https://marp.app/)（Markdownプレゼンテーションエコシステム）用のNeovimプラグインです。
+[Marp](https://marp.app/) のスライドを Neovim からプレビュー・変換する
+プラグインです。
 
-## 機能
+## 主な機能
 
-- 🔄 **ライブプレビュー**: 自動更新とリアルタイムHTML生成付きのウォッチモード（`MarpWatch`）
-- 🛑 **自動クリーンアップ**: バッファを閉じると自動的にMarpサーバーが停止
-- 📤 **エクスポート**: HTML、PDF、PPTX、PNG、JPEGへのエクスポート
-- 🎨 **テーマサポート**: Marpテーマの簡単な切り替え
-- ✂️ **スニペット**: よく使うMarp要素を素早く挿入
-- 🖥️ **プレビュー**: ウォッチモードなしの一回限りのプレビュー
-- 🔧 **デュアルモード**: サーバーモード(-s)とウォッチモード(--watch)の両方をサポート
-- 🐛 **デバッグモード**: トラブルシューティング用の詳細ログ
+- Marp CLI watch mode によるライブプレビュー
+- 現在の deck のディレクトリを配信する server mode
+- watcher を残さない1回限りの HTML プレビュー
+- HTML / PDF / PPTX / PNG / JPEG / speaker notes への出力
+- 先頭スライドのサムネイル生成
+- `marp.config.ts` や `package.json#marp` を含む Marp CLI v4 設定探索
+- browser、PDF outline、editable PPTX、画像、Bespoke template の設定
+- `:checkhealth marp` による標準的な診断
+- `vim.system()` と argv 配列による安全な process 実行
+
+marp.nvim は **Marp CLI v4.5.0** で動作確認しています。v4.5 では
+standalone binary の ESM/import 対応、起動高速化、Firefox/macOS の描画修正が
+入りました。詳細は
+[公式リリースノート](https://github.com/marp-team/marp-cli/releases/tag/v4.5.0)
+を参照してください。
+
+## 必要環境
+
+- Neovim 0.10 以上
+- [Marp CLI](https://github.com/marp-team/marp-cli) v4
+- PDF / PPTX / PNG / JPEG 変換時は対応 browser
+- npm 版 CLI を使う場合のみ Node.js 18 以上
+
+インストール後に `:checkhealth marp` を実行してください。
 
 ## インストール
 
-### [lazy.nvim](https://github.com/folke/lazy.nvim)を使用
+### lazy.nvim
 
 ```lua
 {
   "nwiizo/marp.nvim",
-  ft = "markdown",
   config = function()
-    require("marp").setup {
-      -- オプション設定
-      marp_command = "marp", -- デフォルト: "marp"（PATH上のmarpを使用）
-      browser = nil, -- 自動検出
-      server_mode = false, -- ウォッチモード(-w)を使用
-    }
+    require("marp").setup({
+      -- 必要な設定だけ上書き
+    })
   end,
 }
 ```
 
-**最小設定:**
+command 定義だけを起動時に読み、main module は command 実行時まで遅延されます。
+
+最新 CLI を `npx` で使う場合は argv 配列を推奨します。
+
 ```lua
-{
-  'nwiizo/marp.nvim'
-}
+require("marp").setup({
+  marp_command = { "npx", "@marp-team/marp-cli@latest" },
+})
 ```
 
-**npxを使用（Marpがローカルにインストールされていない場合）:**
-```lua
-{
-  'nwiizo/marp.nvim',
-  config = function()
-    require('marp').setup({
-      marp_command = "npx @marp-team/marp-cli@latest",
-    })
-  end
-}
-```
-
-### [packer.nvim](https://github.com/wbthomason/packer.nvim)を使用
-
-**基本設定（そのまま使用可能）:**
-```lua
-use 'nwiizo/marp.nvim'
-```
-
-**カスタム設定:**
-```lua
-use {
-  'nwiizo/marp.nvim',
-  config = function()
-    require('marp').setup({
-      -- オプション設定
-    })
-  end
-}
-```
+従来の文字列 `"npx @marp-team/marp-cli@latest"` も利用できます。空白を含む
+実行ファイルパスや引数には配列を使ってください。
 
 ## コマンド
 
 | コマンド | 説明 |
-|---------|------|
-| `:MarpWatch` | 現在のファイルの監視を開始しブラウザで開く |
-| `:MarpStop` | 現在のバッファの監視を停止 |
-| `:MarpStopAll` | すべてのMarpサーバーを停止 |
-| `:MarpPreview` | 一回限りのプレビュー |
-| `:MarpList` | アクティブなMarpサーバーを一覧表示 |
-| `:MarpExport [形式]` | 指定形式でエクスポート (html/pdf/pptx/png/jpeg) |
-| `:MarpTheme [テーマ]` | テーマを設定 (default/gaia/uncover) |
-| `:MarpSnippet [名前]` | スニペットを挿入 |
-| `:MarpInfo` | 現在のMarp情報を表示 |
-| `:MarpCopyPath` | HTMLファイルパスをクリップボードにコピー |
-| `:MarpDebug` | Marpセットアップの診断を実行 |
+| --- | --- |
+| `:MarpWatch` | 現在の deck のライブプレビューを開始 |
+| `:MarpStop` | 現在の buffer の process を停止 |
+| `:MarpStopAll` | すべての Marp process を停止 |
+| `:MarpPreview` | HTML を1回生成して開き、process を終了 |
+| `:MarpList` | 動作中の watch/server process を表示 |
+| `:MarpExport [形式] [出力先]` | deck を出力。既定は `html` |
+| `:MarpThumbnail [png\|jpeg]` | 先頭スライドだけを画像化 |
+| `:MarpTheme {theme}` | `default` / `gaia` / `uncover` を設定 |
+| `:MarpSnippet {name}` | Marp snippet を挿入 |
+| `:MarpInfo` | deck・theme・slide・process・export 情報を表示 |
+| `:MarpCopyPath` | 生成した HTML path を clipboard へコピー |
+| `:MarpConfig` | 現在の deck で検出した Marp CLI config を開く |
+| `:MarpDebug` | editor 内で CLI 診断を実行 |
+| `:checkhealth marp` | Neovim、Marp CLI、stdin、config を診断 |
 
-## 利用可能なスニペット
+```vim
+:MarpExport
+:MarpExport pdf
+:MarpExport pptx build/talk.pptx
+:MarpThumbnail jpeg
+```
 
-- `title` - タイトルスライド（著者と日付付き）
-- `columns` - 2カラムレイアウト
-- `image` - 画像マークダウン
-- `bg_image` - 背景画像ディレクティブ
-- `center` - 中央揃えコンテンツ
-- `speaker_notes` - スピーカーノートコメント
+利用できる形式は `html`、`pdf`、`pptx`、`png`、`jpeg`、`notes` です。
+PNG/JPEG の deck 出力は `talk.001.png` のような連番 file になり、実際に
+生成された全 path を通知・copy します。
 
 ## 設定
 
 ```lua
-require('marp').setup({
-  -- Marp CLIコマンド（デフォルト: "marp"、PATH上のmarpを自動検出）
-  marp_command = "marp",
+require("marp").setup({
+  marp_command = "marp", -- 文字列または argv 配列
+  config_file = nil, -- path。false で config 探索を無効化
+  node_options = "",
 
-  -- ブラウザコマンド（nil = 自動検出）
-  browser = nil,
+  server_mode = false, -- false: --watch、true: --server
+  html_option = true,
+  no_stdin = true,
+  allow_local_files = false, -- 信頼できる deck でのみ有効化
 
-  -- 利用可能なテーマ
+  browser = nil, -- URL を開く app。文字列/argv 配列、nil は vim.ui.open()
+  browser_kind = nil, -- Marp 変換用 browser
+  browser_path = nil,
+  browser_protocol = nil, -- "cdp" または "webdriver-bidi"
+  browser_timeout = nil,
+
+  template = nil, -- "bare" または "bespoke"
+  bespoke_osc = nil,
+  bespoke_progress = nil,
+  bespoke_transition = nil,
+
+  pdf_notes = false,
+  pdf_outlines = false,
+  pdf_outlines_pages = nil,
+  pdf_outlines_headings = nil,
+  pptx_editable = false,
+
+  image_scale = 1,
+  jpeg_quality = 85,
+  theme_set = {},
   themes = {
     default = "default",
     gaia = "gaia",
-    uncover = "uncover"
+    uncover = "uncover",
   },
-  
-  -- エクスポート形式
-  export_formats = {
-    html = "--html",
-    pdf = "--pdf",
-    pptx = "--pptx",
-    png = "--images png",
-    jpeg = "--images jpeg"
-  },
-  
-  -- 新機能
-  show_tips = true,           -- 便利なヒントを表示
-  auto_copy_path = true,      -- ファイルパスを自動でクリップボードにコピー
-  show_file_size = true,      -- エクスポート後にファイルサイズを表示
-  suggest_gitignore = true,   -- *.htmlを.gitignoreに追加するよう提案
-  debug = false,              -- デバッグログを有効化（トラブルシューティングに便利）
-  server_mode = false,        -- サーバーモード(-s)またはウォッチモード(--watch)を使用
-  html_option = true          -- ウォッチモードで--htmlオプションを使用（デフォルト: true）
+
+  auto_copy_path = true,
+  show_file_size = true,
+  suggest_gitignore = true,
+  debug = false,
 })
 ```
 
-## 使用例
+`browser` は生成 URL を desktop で開く設定です。引数付きなら argv 配列を
+指定します。`browser_kind` は Marp CLI が PDF/PPTX/画像変換に使う engine の
+設定です。
 
-1. マークダウンファイルを開く
-2. `:MarpWatch`でライブプレビューを開始
-3. プレゼンテーションを編集 - 変更が即座に反映されます
-4. バッファを閉じるか`:MarpStop`でサーバーを停止
+### Marp CLI config の探索
 
-## 必要要件
+現在の deck から上方向へ、Marp CLI と同じ場所を探索します。
 
-- Neovim 0.5以上
-- [Marp CLI](https://github.com/marp-team/marp-cli)（見つからない場合はnpx経由で自動インストール）
+- top-level に `marp` を持つ `package.json`
+- `.marprc*`
+- `.config/marprc*`
+- `marp.config.js` / `.ts` / `.cjs` / `.mjs`
+
+検出したディレクトリを subprocess の working directory にします。
+`config_file` に path を指定すると固定でき、`false` では
+`--no-config-file` を渡します。
+
+### `--no-stdin` を既定で付ける理由
+
+Marp CLI の hidden stdin input は既定で有効です。Neovim の process が
+非TTYの stdin pipe を渡すと、Markdown path があっても EOF 待ちになる場合が
+あります。そのため、すべての file-based command に `--no-stdin` を付けます。
+この flag を受け取れない custom wrapper を使う場合だけ `no_stdin = false` に
+してください。[PR #2](https://github.com/nwiizo/marp.nvim/pull/2) と
+[Issue #3](https://github.com/nwiizo/marp.nvim/issues/3) で報告された停止も
+このケースです。
+
+## 使い方
+
+1. Marp Markdown を開く
+2. `:MarpWatch` を実行
+3. file を保存して browser を更新
+4. `:MarpStop` を実行するか buffer を閉じる
+
+`server_mode = true` では HTML file を watch 出力せず、deck のディレクトリを
+HTTP で配信します。
 
 ## トラブルシューティング
 
-### ウォッチモードでブラウザが開かない
+1. `:checkhealth marp` を実行
+2. Markdown buffer で `:MarpDebug` を実行
+3. 必要なら `debug = true` で CLI stdout/stderr を表示
+4. `:MarpList` と `:MarpStopAll` で process を確認・停止
 
-`:MarpWatch`でブラウザが自動的に開かない場合：
-
-1. `:MarpDebug`を実行してMarp CLIが正しくインストールされているか確認
-2. デバッグモードを有効にして詳細な出力を確認：
-   ```lua
-   require('marp').setup({ debug = true })
-   ```
-3. システムにデフォルトブラウザが設定されているか確認
-4. HTMLファイルパス（通知に表示またはクリップボードにコピー）を手動で開いてみる
-
-### ファイルの変更が検出されない
-
-プラグインはデフォルトで`--watch`モードを使用します。変更が検出されない場合：
-
-1. Marpプロセスが実行中か確認：`:MarpList`
-2. 停止して再起動を試す：`:MarpStop`の後に`:MarpWatch`
-3. ファイルを保存して更新をトリガー
-4. デバッグモードを有効にしてMarpの出力を確認：`require('marp').setup({ debug = true })`
-
-### サーバーモード vs ウォッチモード
-
-デフォルトでは、HTMLファイルを生成して変更を監視するウォッチモード（`--watch`）を使用します。HTTPでファイルを提供するサーバーモード（`-s`）に切り替えることもできます：
-
-```lua
-require('marp').setup({ server_mode = true })
-```
+PDF/PPTX/画像変換で local image が必要な場合は、信頼できる deck に限って
+`allow_local_files = true` を設定してください。

@@ -1,11 +1,9 @@
 -- Minimal init.lua to test marp.nvim
 -- Run with: nvim -u minimal_init.lua
 
--- Add the plugin to runtimepath
-vim.opt.rtp:append('/Users/nwiizo/ghq/github.com/nwiizo/marp.nvim')
-
--- Source all plugin files
-vim.cmd('runtime! plugin/**/*.vim')
+local source = debug.getinfo(1, "S").source:sub(2)
+local plugin_root = vim.fn.fnamemodify(source, ":p:h")
+vim.opt.runtimepath:prepend(plugin_root)
 
 -- Print diagnostic info
 vim.defer_fn(function()
@@ -16,12 +14,12 @@ vim.defer_fn(function()
   else
     print("  ✗ :MarpWatch not found")
   end
-  
+
   if vim.fn.exists(":MarpStop") == 2 then
     print("  ✓ :MarpStop")
   else
     print("  ✗ :MarpStop not found")
   end
-  
-  print("\nTry running :MarpWatch on a markdown file")
+
+  print("\nTry :checkhealth marp, then :MarpWatch on a markdown file")
 end, 100)

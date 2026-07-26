@@ -9,27 +9,47 @@ on:
 jobs:
   lint:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Lua
       uses: leafo/gh-actions-lua@v10
       with:
         luaVersion: "5.1"
-    
+
     - name: Set up LuaRocks
       uses: leafo/gh-actions-luarocks@v4
-    
+
     - name: Install luacheck
       run: luarocks install luacheck
-    
+
     - name: Install stylua
       uses: JohnnyMorganz/stylua-action@v4
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         version: latest
-        args: --check lua/ plugin/ --glob '**/*.lua'
-    
+        args: --check lua/ plugin/ tests/ minimal_init.lua --glob '**/*.lua'
+
     - name: Run luacheck
-      run: luacheck lua/ plugin/
+      run: luacheck lua/ plugin/ tests/ minimal_init.lua
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        neovim: [v0.10.4, stable]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Neovim ${{ matrix.neovim }}
+      run: |
+        curl --fail --location --silent --show-error \
+          --output nvim.tar.gz \
+          "https://github.com/neovim/neovim/releases/download/${{ matrix.neovim }}/nvim-linux-x86_64.tar.gz"
+        tar -xzf nvim.tar.gz
+        echo "$PWD/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+    - name: Run unit tests
+      run: make test

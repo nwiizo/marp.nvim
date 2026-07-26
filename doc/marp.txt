@@ -1,179 +1,321 @@
-*marp.txt*  Marp plugin for Neovim
+*marp.txt*  Marp CLI integration for Neovim
 
 Author:  nwiizo
 License: MIT
 
-CONTENTS                                                         *marp-contents*
+==============================================================================
+CONTENTS                                                        *marp-contents*
 
-1. Introduction ................ |marp-introduction|
-2. Commands .................... |marp-commands|
-3. Configuration ............... |marp-configuration|
-4. Functions ................... |marp-functions|
-5. Snippets .................... |marp-snippets|
+1. Introduction ....................................... |marp-introduction|
+2. Requirements ....................................... |marp-requirements|
+3. Commands ............................................... |marp-commands|
+4. Configuration ..................................... |marp-configuration|
+5. Config discovery ............................... |marp-config-discovery|
+6. Functions ............................................. |marp-functions|
+7. Snippets ............................................... |marp-snippets|
+8. Diagnostics ......................................... |marp-diagnostics|
 
 ==============================================================================
-INTRODUCTION                                                 *marp-introduction*
+INTRODUCTION                                                *marp-introduction*
 
-marp.nvim is a Neovim plugin for Marp (Markdown Presentation Ecosystem).
-It provides live preview, export functionality, theme management, and more.
+marp.nvim connects Neovim to Marp CLI v4. It provides live preview, one-time
+preview, server mode, export, theme editing, snippets, and process cleanup.
 
-Features:
-- Live preview with auto-refresh
-- Auto cleanup when buffer is closed
-- Export to multiple formats (HTML, PDF, PPTX, PNG, JPEG)
-- Theme switching
-- Snippet insertion
-- Multiple server management
+The command entrypoint is loaded at startup, while the main Lua module is
+loaded only when a Marp command is used.
 
+==============================================================================
+REQUIREMENTS                                                *marp-requirements*
+
+- Neovim 0.10 or newer
+- Marp CLI v4
+- A Marp-compatible browser for PDF, PPTX, PNG, and JPEG conversion
+
+Run |:checkhealth| with:
+>
+    :checkhealth marp
+<
 ==============================================================================
 COMMANDS                                                        *marp-commands*
 
-:MarpWatch                                                          *:MarpWatch*
-    Start watching the current markdown file and open it in a browser.
-    The server automatically stops when the buffer is closed.
+                                                        *:MarpWatch*
+:MarpWatch
+    Start live preview for the current Markdown deck. In watch mode this
+    writes HTML next to the source. With |marp.server_mode| it serves the
+    source directory over HTTP.
 
-:MarpStop                                                            *:MarpStop*
-    Stop the Marp server for the current buffer.
+                                                        *:MarpStop*
+:MarpStop
+    Stop the Marp process for the current buffer.
 
-:MarpStopAll                                                      *:MarpStopAll*
-    Stop all active Marp servers.
+                                                        *:MarpStopAll*
+:MarpStopAll
+    Stop every Marp watch/server process.
 
-:MarpPreview                                                      *:MarpPreview*
-    Open a one-time preview of the current file.
+                                                        *:MarpPreview*
+:MarpPreview
+    Generate HTML once, open it with |vim.ui.open()|, and exit without leaving
+    a watcher.
 
-:MarpList                                                            *:MarpList*
-    List all active Marp servers.
+                                                        *:MarpList*
+:MarpList
+    List active Marp watch/server processes.
 
-:MarpInfo                                                            *:MarpInfo*
-    Show detailed information about the current presentation including
-    theme, slide count, file size, and export history.
+                                                        *:MarpExport*
+:MarpExport [{format}] [{output}]
+    Export the current deck. The default format is "html".
 
-:MarpCopyPath                                                    *:MarpCopyPath*
-    Copy the HTML file path to clipboard. Useful when you need to share
-    or access the generated HTML file directly.
+    Formats:
+      html, pdf, pptx, png, jpeg, notes
 
-:MarpExport [{format}]                                             *:MarpExport*
-    Export the current file to the specified format.
-    Available formats: html, pdf, pptx, png, jpeg
-    Default: html
+    PNG/JPEG deck exports create numbered files such as "talk.001.png".
+    Notifications, metadata, and clipboard contents use the actual paths.
 
-:MarpTheme {theme}                                                  *:MarpTheme*
-    Set the theme for the current presentation.
-    Available themes: default, gaia, uncover
+    Examples:
+>
+      :MarpExport
+      :MarpExport pdf
+      :MarpExport pptx build/talk.pptx
+<
+                                                        *:MarpThumbnail*
+:MarpThumbnail [{format}]
+    Export the first slide as "png" (default) or "jpeg".
 
-:MarpSnippet {snippet}                                            *:MarpSnippet*
-    Insert a Marp snippet at the current cursor position.
-    See |marp-snippets| for available snippets.
+                                                        *:MarpTheme*
+:MarpTheme {theme}
+    Set the frontmatter theme to "default", "gaia", or "uncover".
+
+                                                        *:MarpSnippet*
+:MarpSnippet {name}
+    Insert a snippet at the cursor. See |marp-snippets|.
+
+                                                        *:MarpInfo*
+:MarpInfo
+    Show deck, theme, slide, process, and last-export information.
+
+                                                        *:MarpCopyPath*
+:MarpCopyPath
+    Copy the generated HTML path to the clipboard.
+
+                                                        *:MarpConfig*
+:MarpConfig
+    Open the Marp CLI config detected for the current deck.
+
+                                                        *:MarpDebug*
+:MarpDebug
+    Run an in-editor Marp CLI diagnostic. Prefer |:checkhealth| for initial
+    troubleshooting.
 
 ==============================================================================
 CONFIGURATION                                               *marp-configuration*
 
-Configure marp.nvim by calling the setup function:
-
-    require('marp').setup({
-        -- Options here
+Call setup from your plugin manager:
+>
+    require("marp").setup({
+      marp_command = "marp",
+      server_mode = false,
+      allow_local_files = false,
     })
+<
+                                                        *marp.marp_command*
+marp_command
+    Marp executable as a string or argv list.
+    Default: "marp"
 
-Options:
+    Prefer a list when the command has arguments:
+>
+      marp_command = { "npx", "@marp-team/marp-cli@latest" }
+<
+                                                        *marp.node_options*
+node_options
+    NODE_OPTIONS passed to the Marp subprocess.
+    Default: ""
 
-marp_command                                               *marp.marp_command*
-    Command to run Marp CLI.
-    Default: "npx @marp-team/marp-cli@latest"
-    If local marp is available, it will be used automatically.
+                                                        *marp.config_file*
+config_file
+    Explicit Marp config path. Set false to pass "--no-config-file".
+    Default: nil (automatic discovery)
 
-browser                                                         *marp.browser*
-    Browser command to use.
-    Default: nil (auto-detect based on OS)
+                                                        *marp.server_mode*
+server_mode
+    false uses "--watch"; true uses "--server".
+    Default: false
 
-themes                                                           *marp.themes*
-    Table of available themes.
-    Default: {
-        default = "default",
-        gaia = "gaia",
-        uncover = "uncover"
-    }
-
-export_formats                                           *marp.export_formats*
-    Table of export format flags.
-    Default: {
-        html = "--html",
-        pdf = "--pdf",
-        pptx = "--pptx",
-        png = "--images png",
-        jpeg = "--images jpeg"
-    }
-
-show_tips                                                     *marp.show_tips*
-    Show helpful tips after starting the server.
+                                                        *marp.html_option*
+html_option
+    Pass "--html" while watching.
     Default: true
 
-auto_copy_path                                           *marp.auto_copy_path*
-    Automatically copy file paths to clipboard.
+                                                        *marp.no_stdin*
+no_stdin
+    Pass "--no-stdin" to file-based invocations. Keep this enabled because
+    Marp CLI may otherwise wait on Neovim's non-TTY stdin pipe.
     Default: true
 
-show_file_size                                           *marp.show_file_size*
-    Show file sizes after export.
-    Default: true
+                                                        *marp.allow_local_files*
+allow_local_files
+    Pass "--allow-local-files". Enable only for trusted decks.
+    Default: false
 
-suggest_gitignore                                     *marp.suggest_gitignore*
-    Suggest adding *.html to .gitignore if not present.
-    Default: true
+                                                        *marp.browser*
+browser
+    Desktop command used to open generated URLs. Accepts a string or argv
+    list; nil uses |vim.ui.open()|.
+    Default: nil
+
+                                                        *marp.browser_kind*
+browser_kind
+    Browser used internally by Marp conversion: "auto", "chrome", "edge",
+    "firefox", or a preference list.
+    Default: nil (Marp CLI default)
+
+                                                        *marp.browser_path*
+browser_path
+    Browser executable passed through "--browser-path".
+    Default: nil
+
+                                                        *marp.browser_protocol*
+browser_protocol
+    "cdp" or "webdriver-bidi".
+    Default: nil (Marp CLI default)
+
+                                                        *marp.browser_timeout*
+browser_timeout
+    Browser operation timeout in seconds. 0 disables the timeout.
+    Default: nil (Marp CLI default)
+
+                                                        *marp.template*
+template
+    "bare" or "bespoke".
+    Default: nil (Marp CLI default)
+
+                                                        *marp.bespoke_options*
+bespoke_osc
+bespoke_progress
+bespoke_transition
+    Optional boolean controls for the Bespoke HTML template.
+    Default: nil (Marp CLI defaults)
+
+                                                        *marp.pdf_options*
+pdf_notes
+pdf_outlines
+pdf_outlines_pages
+pdf_outlines_headings
+    PDF presenter-note and outline controls.
+    Defaults: false, false, nil, nil
+
+                                                        *marp.pptx_editable*
+pptx_editable
+    Generate editable PPTX output. This Marp feature is experimental.
+    Default: false
+
+                                                        *marp.image_options*
+image_scale
+jpeg_quality
+    Image scale and JPEG quality.
+    Defaults: 1 and 85
+
+                                                        *marp.theme_set*
+theme_set
+    List of additional theme CSS files.
+    Default: {}
+
+                                                        *marp.themes*
+themes
+    Theme names accepted by |:MarpTheme| and their frontmatter values.
+    Defaults: default, gaia, uncover
+
+                                                        *marp.notifications*
+auto_copy_path
+show_file_size
+suggest_gitignore
+    Control clipboard updates, exported-size notifications, and the generated
+    HTML gitignore reminder.
+    Defaults: true, true, true
+
+                                                        *marp.debug*
+debug
+    Include Marp CLI stdout/stderr in notifications.
+    Default: false
+
+==============================================================================
+CONFIG DISCOVERY                                      *marp-config-discovery*
+
+marp.nvim searches upward from the deck using Marp CLI's cosmiconfig places:
+
+- package.json with a top-level "marp" property
+- .marprc*
+- .config/marprc*
+- marp.config.js, .ts, .cjs, and .mjs
+
+The detected directory becomes the subprocess working directory. Use
+|marp.config_file| to force or disable config loading.
 
 ==============================================================================
 FUNCTIONS                                                      *marp-functions*
 
-require('marp').watch()                                           *marp.watch*
-    Start watching the current file.
+require("marp").setup([opts])                              *marp.setup()*
+    Merge user options into the defaults.
 
-require('marp').stop([bufnr])                                      *marp.stop*
-    Stop watching the specified buffer (default: current).
+require("marp").watch()                                    *marp.watch()*
+    Start watch/server mode for the current deck.
 
-require('marp').stop_all()                                    *marp.stop_all*
-    Stop all active servers.
+require("marp").stop([bufnr])                               *marp.stop()*
+    Stop the process associated with a buffer.
 
-require('marp').preview()                                       *marp.preview*
-    Open a one-time preview.
+require("marp").stop_all()                              *marp.stop_all()*
+    Stop all watch/server processes.
 
-require('marp').export([format])                                *marp.export*
-    Export the current file.
+require("marp").preview()                                *marp.preview()*
+    Generate and open a one-time HTML preview.
 
-require('marp').set_theme(theme)                             *marp.set_theme*
-    Set the presentation theme.
+require("marp").export([format], [output])                *marp.export()*
+    Export the current deck.
 
-require('marp').insert_snippet(name)                    *marp.insert_snippet*
+require("marp").thumbnail([format])                    *marp.thumbnail()*
+    Export the first slide as an image.
+
+require("marp").set_theme(theme)                        *marp.set_theme()*
+    Set the frontmatter theme.
+
+require("marp").insert_snippet(name)               *marp.insert_snippet()*
     Insert a snippet.
 
-require('marp').list_active()                              *marp.list_active*
-    List active servers.
-
-require('marp').info()                                            *marp.info*
-    Display presentation information.
-
-require('marp').copy_html_path()                        *marp.copy_html_path*
-    Copy HTML file path to clipboard.
+require("marp").open_config()                          *marp.open_config()*
+    Open the detected Marp CLI config.
 
 ==============================================================================
 SNIPPETS                                                        *marp-snippets*
 
-Available snippets for :MarpSnippet command:
+title
+    Lead title slide with subtitle, author, and date.
 
-title                                                        *marp-snippet-title*
-    Title slide with author and date fields.
+columns
+    Two-column container structure.
 
-columns                                                    *marp-snippet-columns*
-    Two-column layout using Marp's column syntax.
+image
+    Markdown image.
 
-image                                                        *marp-snippet-image*
-    Basic image markdown syntax.
-
-bg_image                                                  *marp-snippet-bg_image*
+bg_image
     Background image directive.
 
-center                                                      *marp-snippet-center*
-    Centered content class.
+center
+    Centered slide class.
 
-speaker_notes                                          *marp-snippet-speaker_notes*
-    HTML comment for speaker notes.
+speaker_notes
+    Marpit presenter-note comment.
+
+==============================================================================
+DIAGNOSTICS                                                  *marp-diagnostics*
+
+Start with:
+>
+    :checkhealth marp
+<
+The health provider checks the Neovim version, executable, Marp CLI version,
+stdin guard, local-file security setting, and current project config.
+
+For command output, set |marp.debug| and run |:MarpDebug|.
 
 ==============================================================================
 vim:tw=78:ts=8:ft=help:norl:

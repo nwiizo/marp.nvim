@@ -10,11 +10,6 @@ globals = {
   "vim",
 }
 
--- Read-only globals
-read_globals = {
-  "vim",
-}
-
 -- Ignore unused arguments
 unused_args = false
 
@@ -25,11 +20,4 @@ unused_secondaries = false
 ignore = {
   "212", -- Unused argument
   "213", -- Unused loop variable
-}
-
--- Exclude files
-exclude_files = {
-  "debug_*.lua",
-  "minimal_init.lua",
-  "plugin/*.vim",
 }
