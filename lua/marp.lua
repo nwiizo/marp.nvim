@@ -64,6 +64,7 @@ M.config = {
   image_scale = 1, -- Scale factor for rendered images (2 for retina)
   jpeg_quality = 85, -- JPEG image quality (1-100)
   -- Theme options
+  custom_theme = nil, -- Default --theme for preview/export without frontmatter
   theme_set = {}, -- Additional theme CSS file paths
 }
 
@@ -94,6 +95,9 @@ local function validate_config(opts)
     error("opts.theme_set must be a list", 3)
   end
   validate_string_list("opts.theme_set", opts.theme_set)
+  if opts.custom_theme ~= nil and (type(opts.custom_theme) ~= "string" or opts.custom_theme == "") then
+    error("opts.custom_theme must be a non-empty string or nil", 3)
+  end
 
   if opts.config_file ~= nil and opts.config_file ~= false and type(opts.config_file) ~= "string" then
     error("opts.config_file must be a string, false, or nil", 3)
@@ -169,6 +173,32 @@ local function append_shared_args(args)
     table.insert(args, "--allow-local-files")
   end
   append_args(args, common_args())
+end
+
+local function frontmatter_theme(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  if lines[1] ~= "---" then
+    return nil
+  end
+
+  for index = 2, #lines do
+    local line = lines[index]
+    if line == "---" then
+      break
+    end
+    local theme = line:match("^%s*theme%s*:%s*(.-)%s*$")
+    if theme and theme ~= "" then
+      return theme
+    end
+  end
+  return nil
+end
+
+local function append_custom_theme(args, bufnr)
+  if M.config.custom_theme and not frontmatter_theme(bufnr) then
+    table.insert(args, "--theme")
+    table.insert(args, M.config.custom_theme)
+  end
 end
 
 local function file_args(file, args)
@@ -708,6 +738,7 @@ end
 
 -- Export current file
 function M.export(format, output)
+  local bufnr = vim.api.nvim_get_current_buf()
   local file = vim.api.nvim_buf_get_name(0)
 
   if file == "" or not file:match("%.md$") then
@@ -728,6 +759,7 @@ function M.export(format, output)
   local _, project_root = get_marp_config(file)
   local args = cli.argv(export_flag)
   append_args(args, cli.export_args(M.config, format))
+  append_custom_theme(args, bufnr)
 
   local output_file = file:gsub("%.md$", "")
   local ext_map = {
@@ -793,6 +825,7 @@ function M.preview()
   local args = { "--html" }
   table.insert(args, "--output")
   table.insert(args, html_file)
+  append_custom_theme(args, bufnr)
   args = file_args(file, args)
 
   vim.notify("Generating preview...", vim.log.levels.INFO)

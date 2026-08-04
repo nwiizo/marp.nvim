@@ -22,6 +22,14 @@ local function assert_contains(values, expected, message)
   error((message or "value not found") .. ": " .. vim.inspect(expected))
 end
 
+local function assert_not_contains(values, unexpected, message)
+  for _, value in ipairs(values) do
+    if value == unexpected then
+      error((message or "unexpected value found") .. ": " .. vim.inspect(unexpected))
+    end
+  end
+end
+
 local temp_root = vim.fn.tempname()
 vim.fn.mkdir(temp_root .. "/project/slides/nested", "p")
 vim.fn.writefile({ "---", "marp: true", "---", "# Test" }, temp_root .. "/project/slides/nested/deck.md")
@@ -113,8 +121,27 @@ local valid, validation_error = pcall(marp.setup, { jpeg_quality = 101 })
 assert_equal(false, valid, "rejects an invalid JPEG quality")
 assert(validation_error:match("jpeg_quality"), "validation error identifies the invalid option")
 
--- An explicit desktop opener takes precedence over vim.ui.open().
+-- custom_theme remains a preview/export default, but frontmatter takes precedence.
+local preview_deck = temp_root .. "/project/slides/nested/deck.md"
+vim.cmd.edit(vim.fn.fnameescape(preview_deck))
+local captured_argv
 local original_system = vim.system
+vim.system = function(argv)
+  captured_argv = argv
+  return {}
+end
+marp.setup({ custom_theme = "custom.css" })
+marp.preview()
+assert_contains(captured_argv, "--theme", "passes custom_theme to preview")
+assert_contains(captured_argv, "custom.css", "passes the configured custom theme")
+vim.api.nvim_buf_set_lines(0, 0, -1, false, { "---", "marp: true", "theme: gaia", "---", "# Test" })
+marp.preview()
+vim.system = original_system
+assert_not_contains(captured_argv, "--theme", "frontmatter theme takes precedence over custom_theme")
+vim.bo.modified = false
+
+-- An explicit desktop opener takes precedence over vim.ui.open().
+original_system = vim.system
 local original_ui_open = vim.ui.open
 local opened_argv
 local default_open_called = false
@@ -138,7 +165,7 @@ assert_equal(
 assert_equal(false, default_open_called, "does not call vim.ui.open when browser is configured")
 
 -- Automatic retries preserve the current count instead of resetting forever.
-local retry_deck = temp_root .. "/project/slides/nested/deck.md"
+local retry_deck = preview_deck
 vim.cmd.edit(vim.fn.fnameescape(retry_deck))
 local bufnr = vim.api.nvim_get_current_buf()
 marp.setup({

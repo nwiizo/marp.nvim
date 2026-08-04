@@ -149,6 +149,7 @@ require("marp").setup({
   -- Images and themes
   image_scale = 1,
   jpeg_quality = 85,
+  custom_theme = nil, -- default theme for preview/export without frontmatter
   theme_set = {},
   themes = {
     default = "default",
@@ -167,6 +168,10 @@ require("marp").setup({
 `browser` opens the generated URL on the desktop; use an argv list when the
 opener needs arguments. `browser_kind` selects the browser engine Marp CLI uses
 for conversion; the two options are intentionally separate.
+
+`custom_theme` passes `--theme` to preview and export commands. A `theme:`
+value in the deck's YAML frontmatter takes precedence. Use `theme_set` to make
+custom theme CSS files available to Marp CLI.
 
 ### Marp CLI config discovery
 
@@ -336,6 +341,7 @@ require("marp").setup({
 
   image_scale = 1,
   jpeg_quality = 85,
+  custom_theme = nil, -- frontmatter がない場合の preview/export 用 theme
   theme_set = {},
   themes = {
     default = "default",
@@ -349,6 +355,10 @@ require("marp").setup({
   debug = false,
 })
 ```
+
+`custom_theme` は preview/export に `--theme` を渡します。deck の YAML
+frontmatter に `theme:` がある場合はそちらが優先されます。カスタム theme CSS
+を Marp CLI で利用可能にするには `theme_set` を使ってください。
 
 `browser` は生成 URL を desktop で開く設定です。引数付きなら argv 配列を
 指定します。`browser_kind` は Marp CLI が PDF/PPTX/画像変換に使う engine の
