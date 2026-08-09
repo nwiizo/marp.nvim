@@ -25,6 +25,12 @@ support to the standalone binary, improved CLI startup time, and fixed Firefox
 and macOS rendering issues. See the
 [official v4.5.0 release notes](https://github.com/marp-team/marp-cli/releases/tag/v4.5.0).
 
+Compatibility note: Marp Core 4.4.0, bundled with CLI 4.5.0, no longer changes
+the `gaia` theme background when custom CSS sets only `background-color`. Use
+the `background` shorthand, Gaia's `--color-background` CSS variable, or the
+`backgroundColor` Markdown directive instead. See the
+[Marp Core 4.4.0 changelog](https://github.com/marp-team/marp-core/blob/main/CHANGELOG.md#v440---2026-07-17).
+
 ## Requirements
 
 - Neovim 0.10 or newer
@@ -235,6 +241,13 @@ marp.nvim は **Marp CLI v4.5.0** で動作確認しています。v4.5 では
 standalone binary の ESM/import 対応、起動高速化、Firefox/macOS の描画修正が
 入りました。詳細は
 [公式リリースノート](https://github.com/marp-team/marp-cli/releases/tag/v4.5.0)
+を参照してください。
+
+互換性に関する注意: CLI 4.5.0 同梱の Marp Core 4.4.0 では、custom CSS で
+`background-color` だけを指定しても `gaia` theme の背景色は変わりません。
+代わりに `background` shorthand、Gaia の `--color-background` CSS variable、
+または Markdown の `backgroundColor` directive を使ってください。詳細は
+[Marp Core 4.4.0 changelog](https://github.com/marp-team/marp-core/blob/main/CHANGELOG.md#v440---2026-07-17)
 を参照してください。
 
 ## 必要環境

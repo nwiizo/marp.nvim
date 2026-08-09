@@ -137,6 +137,53 @@ assert_equal(
 )
 assert_equal(false, default_open_called, "does not call vim.ui.open when browser is configured")
 
+-- Health checks must load the config belonging to the current deck.
+local health_root = temp_root .. "/health-project"
+local health_deck = health_root .. "/slides/deck.md"
+local health_config = health_root .. "/marp.config.mjs"
+vim.fn.mkdir(health_root .. "/slides", "p")
+vim.fn.writefile({ "export default {}" }, health_config)
+vim.fn.writefile({ "---", "marp: true", "---", "# Health" }, health_deck)
+vim.cmd.edit(vim.fn.fnameescape(health_deck))
+marp.setup({ marp_command = { "printf" } })
+
+local health_argv
+local health_options
+local health_messages = {}
+local original_health = {}
+for _, method in ipairs({ "start", "ok", "error", "warn", "info" }) do
+  original_health[method] = vim.health[method]
+  vim.health[method] = function(message)
+    table.insert(health_messages, tostring(message))
+  end
+end
+
+original_system = vim.system
+vim.system = function(argv, opts)
+  health_argv = argv
+  health_options = opts
+  return {
+    wait = function()
+      return { code = 0, stdout = "@marp-team/marp-cli v4.5.0" }
+    end,
+  }
+end
+
+local health_ok, health_error = pcall(require("marp.health").check)
+vim.system = original_system
+for method, original in pairs(original_health) do
+  vim.health[method] = original
+end
+
+assert(health_ok, health_error)
+assert_equal({ "printf", "--version", "--no-stdin" }, health_argv, "builds a config-aware version check")
+assert_equal(vim.uv.fs_realpath(health_root), health_options.cwd, "runs the version check from the deck's project root")
+assert_contains(
+  health_messages,
+  "Marp config is loadable: " .. vim.uv.fs_realpath(health_config),
+  "reports a loadable project config"
+)
+
 -- Automatic retries preserve the current count instead of resetting forever.
 local retry_deck = temp_root .. "/project/slides/nested/deck.md"
 vim.cmd.edit(vim.fn.fnameescape(retry_deck))

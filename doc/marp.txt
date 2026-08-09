@@ -21,6 +21,11 @@ INTRODUCTION                                                *marp-introduction*
 marp.nvim connects Neovim to Marp CLI v4. It provides live preview, one-time
 preview, server mode, export, theme editing, snippets, and process cleanup.
 
+Marp CLI 4.5.0 bundles Marp Core 4.4.0. In that version, custom CSS that sets
+only `background-color` no longer changes the `gaia` theme background. Use the
+`background` shorthand, Gaia's `--color-background` CSS variable, or the
+`backgroundColor` Markdown directive instead.
+
 The command entrypoint is loaded at startup, while the main Lua module is
 loaded only when a Marp command is used.
 
@@ -313,7 +318,8 @@ Start with:
     :checkhealth marp
 <
 The health provider checks the Neovim version, executable, Marp CLI version,
-stdin guard, local-file security setting, and current project config.
+stdin guard, local-file security setting, and whether the current project
+config and custom engine can be loaded.
 
 For command output, set |marp.debug| and run |:MarpDebug|.
 

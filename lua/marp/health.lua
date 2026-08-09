@@ -25,10 +25,37 @@ function M.check()
   end
   vim.health.ok("Marp command is executable: " .. executable)
 
-  local version_args = cli.build_argv(command, { "--version", "--no-stdin" })
+  local file = vim.api.nvim_buf_get_name(0)
+  local config_path
+  local project_root
+  local version_options = { "--version", "--no-stdin" }
+
+  if config.config_file == false then
+    table.insert(version_options, "--no-config-file")
+    if file ~= "" then
+      project_root = vim.fn.fnamemodify(file, ":p:h")
+    end
+    vim.health.info("Marp config discovery is disabled")
+  elseif type(config.config_file) == "string" and config.config_file ~= "" then
+    config_path = vim.fn.fnamemodify(config.config_file, ":p")
+    project_root = vim.fn.fnamemodify(config_path, ":h")
+    table.insert(version_options, "--config-file")
+    table.insert(version_options, config_path)
+    vim.health.info("Explicit Marp config: " .. config_path)
+  elseif file ~= "" then
+    config_path, project_root = cli.find_config(file)
+    if config_path then
+      vim.health.info("Detected Marp config: " .. config_path)
+    else
+      vim.health.info("No project Marp config detected for the current buffer")
+    end
+  end
+
+  local version_args = cli.build_argv(command, version_options)
   local ok, result = pcall(function()
     return vim
       .system(version_args, {
+        cwd = project_root,
         text = true,
         env = cli.process_env(config),
         timeout = 5000,
@@ -40,8 +67,11 @@ function M.check()
     vim.health.error("Could not run Marp CLI: " .. tostring(result))
   elseif result.code == 0 then
     vim.health.ok(vim.trim(result.stdout or "Marp CLI version check passed"))
+    if config_path then
+      vim.health.ok("Marp config is loadable: " .. config_path)
+    end
   else
-    vim.health.error("Marp CLI version check failed: " .. vim.trim(result.stderr or "unknown error"))
+    vim.health.error("Marp CLI version/config check failed: " .. vim.trim(result.stderr or "unknown error"))
   end
 
   if type(config.marp_command) == "string" and config.marp_command:match("%s") then
@@ -60,20 +90,6 @@ function M.check()
     vim.health.warn("allow_local_files is enabled", {
       "Only open trusted slide decks because rendered Markdown can access local files.",
     })
-  end
-
-  local file = vim.api.nvim_buf_get_name(0)
-  if file ~= "" then
-    local config_path = cli.find_config(file)
-    if config.config_file == false then
-      vim.health.info("Marp config discovery is disabled")
-    elseif type(config.config_file) == "string" and config.config_file ~= "" then
-      vim.health.info("Explicit Marp config: " .. vim.fn.fnamemodify(config.config_file, ":p"))
-    elseif config_path then
-      vim.health.ok("Detected Marp config: " .. config_path)
-    else
-      vim.health.info("No project Marp config detected for the current buffer")
-    end
   end
 end
 

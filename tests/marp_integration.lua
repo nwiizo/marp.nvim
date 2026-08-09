@@ -66,12 +66,21 @@ assert_true(
 opened_url = nil
 marp.setup({ server_mode = false })
 local watcher_ready = false
+local watch_conversion_seen = false
+local opened_after_watch_conversion = false
 local original_notify = vim.notify
 vim.notify = function(message, level, opts)
+  if tostring(message):find("=>", 1, true) then
+    watch_conversion_seen = true
+  end
   if tostring(message):find("[Watch mode] Start watching", 1, true) then
     watcher_ready = true
   end
   return original_notify(message, level, opts)
+end
+marp.open_browser = function(url)
+  opened_url = url
+  opened_after_watch_conversion = watch_conversion_seen
 end
 marp.watch()
 assert_true(
@@ -81,6 +90,7 @@ assert_true(
   "Marp watch did not start"
 )
 assert_true(opened_url == vim.uri_from_fname(preview_html), "Marp watch opened an unexpected URL")
+assert_true(opened_after_watch_conversion, "Marp watch opened the browser before its native initial conversion")
 
 local watch_marker = "Issue 3 watch update"
 vim.api.nvim_buf_set_lines(0, 0, -1, false, {

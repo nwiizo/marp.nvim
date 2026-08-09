@@ -348,49 +348,7 @@ local function prepare_watch_output(bufnr, html_file, server_mode)
   end
 end
 
-local function generate_initial_html(bufnr, file, html_file, project_root, generation)
-  vim.notify("Generating initial HTML...", vim.log.levels.INFO)
-  local args = {}
-  if M.config.html_option then
-    table.insert(args, "--html")
-  end
-  table.insert(args, "--output")
-  table.insert(args, html_file)
-
-  local process = start_marp(file_args(file, args), { cwd = project_root })
-  if not process then
-    return false
-  end
-
-  local result = process:wait()
-  if result.code ~= 0 then
-    vim.notify("Failed to generate initial HTML: " .. (result.stderr or ""), vim.log.levels.ERROR)
-    return false
-  end
-
-  vim.wait(500, function()
-    return vim.fn.filereadable(html_file) == 1
-  end)
-  if vim.fn.filereadable(html_file) ~= 1 then
-    vim.notify("Failed to create HTML file", vim.log.levels.ERROR)
-    return false
-  end
-
-  vim.notify("✅ Initial HTML generated", vim.log.levels.INFO)
-  vim.defer_fn(function()
-    if
-      M.metadata.process_generations[bufnr] == generation
-      and not M.metadata.browser_opened[bufnr]
-      and vim.api.nvim_buf_is_valid(bufnr)
-    then
-      M.open_browser(vim.uri_from_fname(html_file))
-      M.metadata.browser_opened[bufnr] = true
-    end
-  end, 200)
-  return true
-end
-
-local function watch_output_handler(bufnr, file, server_mode, generation)
+local function watch_output_handler(bufnr, file, html_file, server_mode, generation)
   local last_update_time = 0
 
   return function(line)
@@ -413,6 +371,11 @@ local function watch_output_handler(bufnr, file, server_mode, generation)
     end
 
     if clean_line:match("=>") or clean_line:match("has been written") then
+      if not server_mode and not M.metadata.browser_opened[bufnr] then
+        M.open_browser(vim.uri_from_fname(html_file))
+        M.metadata.browser_opened[bufnr] = true
+      end
+
       local current_time = vim.uv.now()
       if current_time - last_update_time > 1000 then
         vim.notify("🔄 HTML updated", vim.log.levels.INFO)
@@ -440,8 +403,8 @@ local function register_buffer_cleanup(bufnr)
   })
 end
 
-local function start_watch_process(bufnr, file, args, project_root, server_mode, generation)
-  local handle_output = watch_output_handler(bufnr, file, server_mode, generation)
+local function start_watch_process(bufnr, file, html_file, args, project_root, server_mode, generation)
+  local handle_output = watch_output_handler(bufnr, file, html_file, server_mode, generation)
   local process
   process = start_marp(
     args,
@@ -553,16 +516,14 @@ function M.watch(retry_generation)
     if M.config.html_option then
       table.insert(action_args, "--html")
     end
+    table.insert(action_args, "--output")
+    table.insert(action_args, html_file)
     action_args = file_args(file, action_args)
   end
   prepare_watch_output(bufnr, html_file, server_mode)
   vim.notify("Starting Marp: " .. table.concat(build_marp_argv(action_args), " "), vim.log.levels.INFO)
 
-  if not server_mode and not generate_initial_html(bufnr, file, html_file, project_root, generation) then
-    return
-  end
-
-  start_watch_process(bufnr, file, action_args, project_root, server_mode, generation)
+  start_watch_process(bufnr, file, html_file, action_args, project_root, server_mode, generation)
 end
 
 -- Stop Marp process for buffer
