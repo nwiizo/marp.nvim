@@ -220,6 +220,13 @@ jpeg_quality
     Image scale and JPEG quality.
     Defaults: 1 and 85
 
+                                                        *marp.custom_theme*
+custom_theme
+    Theme name or CSS file path passed to Marp CLI's --theme option for
+    preview and export commands. A YAML frontmatter theme: directive takes
+    precedence.
+    Default: nil
+
                                                         *marp.theme_set*
 theme_set
     List of additional theme CSS files.

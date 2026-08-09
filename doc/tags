@@ -28,6 +28,7 @@ marp.browser_path	marp.txt	/*marp.browser_path*
 marp.browser_protocol	marp.txt	/*marp.browser_protocol*
 marp.browser_timeout	marp.txt	/*marp.browser_timeout*
 marp.config_file	marp.txt	/*marp.config_file*
+marp.custom_theme	marp.txt	/*marp.custom_theme*
 marp.debug	marp.txt	/*marp.debug*
 marp.export()	marp.txt	/*marp.export()*
 marp.html_option	marp.txt	/*marp.html_option*
